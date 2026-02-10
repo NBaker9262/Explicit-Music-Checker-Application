@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Explicit Music Checker</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="navbar">
+        <div class="nav-container">
+            <h1 class="logo">🎵 Explicit Music Checker</h1>
+            <nav class="nav-menu">
+                <button class="nav-btn active" data-page="request">Request Song</button>
+                <button class="nav-btn" data-page="vetting">Vet Songs</button>
+            </nav>
+        </div>
+    </div>
+
+    <!-- Request Page -->
+    <div id="request" class="page active">
+        <div class="container">
+            <h2>Request a Song</h2>
+            <form id="requestForm" class="form-container">
+                <div class="form-group">
+                    <label for="songTitle">Song Title</label>
+                    <input type="text" id="songTitle" placeholder="Enter song title" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="artistName">Artist Name</label>
+                    <input type="text" id="artistName" placeholder="Enter artist name" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="requesterName">Your Name</label>
+                    <input type="text" id="requesterName" placeholder="Enter your name" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="songLink">Song Link (Optional)</label>
+                    <input type="url" id="songLink" placeholder="https://example.com/song">
+                </div>
+
+                <div class="form-group">
+                    <label for="notes">Additional Notes</label>
+                    <textarea id="notes" rows="4" placeholder="Any additional information..."></textarea>
+                </div>
+
+                <button type="submit" class="btn btn-primary">Submit Request</button>
+            </form>
+
+            <div id="requestList" class="request-list">
+                <h3>Recent Requests</h3>
+                <div id="requestItems" class="items-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Vetting Page -->
+    <div id="vetting" class="page">
+        <div class="container">
+            <h2>Vet Songs</h2>
+            
+            <div class="filter-controls">
+                <select id="statusFilter" class="filter-select">
+                    <option value="">All Status</option>
+                    <option value="pending">Pending</option>
+                    <option value="approved">Approved</option>
+                    <option value="rejected">Rejected</option>
+                </select>
+            </div>
+
+            <div id="vettingList" class="vetting-list">
+                <div id="vettingItems" class="items-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
