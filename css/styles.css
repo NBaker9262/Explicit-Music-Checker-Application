@@ -1,0 +1,5 @@
+body { font-family: sans-serif; margin: 20px; }
+#results { margin-top: 20px; }
+.song-card { border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; display: flex; align-items: center; }
+.song-card img { margin-right: 10px; }
+.song-card .info { flex: 1; }
