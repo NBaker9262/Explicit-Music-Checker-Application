@@ -5,10 +5,17 @@
   "description": "Spotify-based song request search and queue review app",
   "main": "server/server.js",
   "scripts": {
-    "start": "node server/server.js"
+    "start": "node server/server.js",
+    "cf:dev": "wrangler dev",
+    "cf:deploy": "wrangler deploy",
+    "cf:migrate:local": "wrangler d1 execute music-queue --file=./cloudflare/migrations/0001_init.sql",
+    "cf:migrate:remote": "wrangler d1 execute music-queue --file=./cloudflare/migrations/0001_init.sql --remote"
   },
   "dependencies": {
     "express": "^4.21.2",
     "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.53.1"
   }
 }

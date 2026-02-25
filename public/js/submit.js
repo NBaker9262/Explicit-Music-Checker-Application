@@ -42,7 +42,7 @@ if (!cachedTrack) {
             setStatus('Submitting request...');
 
             try {
-                const response = await fetch('/api/queue', {
+                const response = await fetch(window.appApi.buildApiUrl('/api/queue'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({

@@ -20,7 +20,7 @@ async function updateStatus(itemId, status) {
     }
 
     try {
-        const response = await fetch(`/api/queue/${itemId}`, {
+        const response = await fetch(window.appApi.buildApiUrl(`/api/queue/${itemId}`), {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status, reviewNote })
@@ -85,7 +85,7 @@ async function loadQueue() {
     setStatus('Loading queue...');
 
     try {
-        const response = await fetch(`/api/queue${query}`);
+        const response = await fetch(window.appApi.buildApiUrl(`/api/queue${query}`));
         const payload = await response.json();
 
         if (!response.ok) {

@@ -77,7 +77,7 @@ async function searchSongs() {
     resultsDiv.innerHTML = '';
 
     try {
-        const response = await fetch(`/api/spotify/search?q=${encodeURIComponent(query)}`);
+        const response = await fetch(window.appApi.buildApiUrl(`/api/spotify/search?q=${encodeURIComponent(query)}`));
         const data = await response.json();
 
         if (!response.ok) {
