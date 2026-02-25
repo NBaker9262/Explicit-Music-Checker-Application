@@ -1,0 +1,14 @@
+{
+  "name": "explicit-music-checker-application",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Spotify-based song request search and queue review app",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "node-fetch": "^2.7.0"
+  }
+}

@@ -2,17 +2,39 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Music Search</title>
-<link rel="stylesheet" href="css/style.css">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Song Request Search</title>
+<link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-<h1>Music Search</h1>
+	<main class="page-shell">
+		<header class="topbar">
+			<h1>Song Request Search</h1>
+			<nav class="topbar-nav">
+				<a href="/queue.html">Queue</a>
+			</nav>
+		</header>
 
-<input type="text" id="searchInput" placeholder="Search for songs, artists...">
-<button id="searchBtn">Search</button>
+		<section class="panel">
+			<h2>Find a song from Spotify</h2>
+			<p class="panel-subtitle">Search and pick one result to avoid title and artist mismatches.</p>
 
-<div id="results"></div>
+			<div class="search-row">
+				<input type="text" id="searchInput" placeholder="Search by song title or artist" autocomplete="off">
+				<button id="searchBtn" class="btn btn-primary" type="button">Search</button>
+			</div>
 
-<script src="js/main.js"></script>
+			<div id="statusMessage" class="status-message" aria-live="polite"></div>
+			<div id="results" class="results-grid"></div>
+		</section>
+
+		<section class="panel selected-panel" id="selectedPanel" hidden>
+			<h2>Selected song</h2>
+			<div id="selectedSong" class="selected-song"></div>
+			<button id="continueBtn" class="btn btn-primary" type="button">Continue to Submit</button>
+		</section>
+	</main>
+
+<script src="/js/main.js"></script>
 </body>
 </html>

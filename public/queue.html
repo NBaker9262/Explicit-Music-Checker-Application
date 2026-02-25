@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Song Request Queue</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <main class="page-shell">
+        <header class="topbar">
+            <h1>Song Queue</h1>
+            <nav class="topbar-nav">
+                <a href="/">Search</a>
+                <a href="/submit.html">Submit</a>
+            </nav>
+        </header>
+
+        <section class="panel">
+            <div class="queue-toolbar">
+                <h2>Queue items</h2>
+                <div class="queue-actions">
+                    <select id="statusFilter">
+                        <option value="">All statuses</option>
+                        <option value="pending">Pending</option>
+                        <option value="approved">Approved</option>
+                        <option value="rejected">Rejected</option>
+                    </select>
+                    <button id="refreshBtn" class="btn" type="button">Refresh</button>
+                </div>
+            </div>
+            <p id="queueStatus" class="status-message" aria-live="polite"></p>
+            <div id="queueList" class="queue-list"></div>
+        </section>
+    </main>
+
+<script src="/js/queue.js"></script>
+</body>
+</html>
