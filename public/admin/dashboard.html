@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin Dashboard</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="app-bg">
+  <main class="page-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Dance Admin Console</p>
+        <h1>Queue Control Center</h1>
+      </div>
+      <nav class="topbar-nav">
+        <a href="/">Public Page</a>
+        <button id="adminLogoutBtn" class="btn" type="button">Logout</button>
+      </nav>
+    </header>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Queue Filters</h2>
+        <button id="refreshAdminBtn" class="btn" type="button">Refresh</button>
+      </div>
+      <div class="filter-grid">
+        <label>Status
+          <select id="adminStatusFilter">
+            <option value="">All</option>
+            <option value="pending">Pending</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+          </select>
+        </label>
+        <label>Confidence
+          <select id="adminConfidenceFilter">
+            <option value="">All</option>
+            <option value="clean">Clean</option>
+            <option value="explicit">Explicit</option>
+            <option value="unknown">Unknown</option>
+          </select>
+        </label>
+        <label>Dance moment
+          <select id="adminMomentFilter">
+            <option value="">All</option>
+            <option value="anytime">Anytime</option>
+            <option value="grand_entrance">Grand Entrance</option>
+            <option value="warmup">Warmup</option>
+            <option value="peak_hour">Peak Hour</option>
+            <option value="slow_dance">Slow Dance</option>
+            <option value="last_dance">Last Dance</option>
+          </select>
+        </label>
+        <label>Search
+          <input id="adminSearchInput" type="text" placeholder="Track, artist, requester">
+        </label>
+      </div>
+      <div class="queue-actions">
+        <button id="bulkApproveBtn" class="btn" type="button">Bulk Approve Clean High Priority</button>
+        <button id="bulkRejectBtn" class="btn" type="button">Bulk Reject Explicit</button>
+      </div>
+      <p id="adminStatusMessage" class="status-message" aria-live="polite"></p>
+      <div id="adminQueueList" class="queue-list"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Analytics</h2>
+      <p id="adminAnalyticsStatus" class="status-message" aria-live="polite"></p>
+      <div id="adminTotalsGrid" class="analytics-grid"></div>
+      <div class="analytics-layout">
+        <article>
+          <h3>Top Artists</h3>
+          <div id="adminTopArtists" class="analytics-list"></div>
+        </article>
+        <article>
+          <h3>Top Tracks</h3>
+          <div id="adminTopTracks" class="analytics-list"></div>
+        </article>
+        <article>
+          <h3>Dance Moments</h3>
+          <div id="adminDanceMoments" class="analytics-list"></div>
+        </article>
+        <article>
+          <h3>Vibes</h3>
+          <div id="adminVibeTags" class="analytics-list"></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+<script src="/js/config.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/admin-auth.js"></script>
+<script src="/js/admin-dashboard.js"></script>
+</body>
+</html>

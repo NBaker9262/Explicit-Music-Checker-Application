@@ -3,42 +3,56 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Song Request Search</title>
+<title>Dance Song Requests</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
-<body>
-	<main class="page-shell">
-		<header class="topbar">
-			<h1>Song Request Search</h1>
-			<nav class="topbar-nav">
-				<a href="/submit.html">Submit</a>
-				<a href="/queue.html">Queue</a>
-				<a href="/analytics.html">Analytics</a>
-			</nav>
-		</header>
+<body class="app-bg">
+  <main class="page-shell page-public">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Live Dance Requests</p>
+        <h1>Request A Song</h1>
+        <p class="hero-copy">Search, choose a track, and submit your name.</p>
+      </div>
+      <nav class="topbar-nav">
+        <a class="btn" href="/admin/login.html">Admin Login</a>
+      </nav>
+    </header>
 
-		<section class="panel">
-			<h2>Find a song from Spotify</h2>
-			<p class="panel-subtitle">Search and pick one result to avoid title and artist mismatches.</p>
+    <section class="panel">
+      <h2>Search Spotify</h2>
+      <div class="search-row">
+        <input type="text" id="searchInput" placeholder="Search by song title or artist" autocomplete="off">
+        <button id="searchBtn" class="btn btn-primary" type="button">Search</button>
+      </div>
+      <p id="searchStatus" class="status-message" aria-live="polite"></p>
+      <div id="searchResults" class="results-grid"></div>
+    </section>
 
-			<div class="search-row">
-				<input type="text" id="searchInput" placeholder="Search by song title or artist" autocomplete="off">
-				<button id="searchBtn" class="btn btn-primary" type="button">Search</button>
-			</div>
+    <section class="panel" id="selectedPanel" hidden>
+      <h2>Submit Request</h2>
+      <div id="selectedSong" class="selected-song"></div>
+      <form id="requestForm" class="form-grid request-form">
+        <label for="requesterName">Your name</label>
+        <input id="requesterName" type="text" maxlength="80" required>
 
-			<div id="statusMessage" class="status-message" aria-live="polite"></div>
-			<div id="results" class="results-grid"></div>
-		</section>
+        <button class="btn btn-primary" type="submit">Submit Request</button>
+      </form>
+      <p id="requestStatus" class="status-message" aria-live="polite"></p>
+    </section>
 
-		<section class="panel selected-panel" id="selectedPanel" hidden>
-			<h2>Selected song</h2>
-			<div id="selectedSong" class="selected-song"></div>
-			<button id="continueBtn" class="btn btn-primary" type="button">Continue to Submit</button>
-		</section>
-	</main>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Live Queue</h2>
+        <p class="inline-hint">Auto-updates every 8 seconds</p>
+      </div>
+      <p id="queueStatus" class="status-message" aria-live="polite"></p>
+      <div id="approvedList" class="queue-list"></div>
+    </section>
+  </main>
 
 <script src="/js/config.js"></script>
 <script src="/js/api.js"></script>
-<script src="/js/main.js"></script>
+<script src="/js/public-app.js"></script>
 </body>
 </html>

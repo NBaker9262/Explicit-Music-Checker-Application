@@ -1,80 +1,94 @@
 # Explicit-Music-Checker-Application
 
-A Spotify-based song request app with queue moderation and analytics.
+Dance-focused song request app with two separate experiences:
 
-## What this app now supports
+- Public request board for guests/students to search and submit songs.
+- Admin dashboard for moderation, scheduling, and analytics.
 
-- Search Spotify tracks.
-- Submit requests with requester role and optional event date.
-- Duplicate request detection (joins existing pending request and increments vote count).
-- Content confidence tags (`clean`, `explicit`, `unknown`).
-- Moderation presets during review (instead of free-text-only moderation).
-- Priority scoring based on vote count, requester role, event date urgency, and confidence.
-- Analytics dashboard for top artists, approval rate, and most rejected tracks.
+## Live page structure
 
-## App routes
+- `/` public request page
+- `/admin/login.html` admin login
+- `/admin/dashboard.html` admin control center
 
-- `/` search and select a song
-- `/submit.html` submit request details
-- `/queue.html` moderation queue
-- `/analytics.html` analytics dashboard
+Legacy pages (`/submit.html`, `/queue.html`, `/analytics.html`) now redirect.
 
-## API routes
+## Admin credentials
+
+This build uses:
+
+- Username: `admin`
+- Password: `D3f3nd3rs`
+
+The same defaults are in code, and also set in `wrangler.toml` vars.
+
+## API overview
+
+### Public endpoints
 
 - `GET /api/health`
-- `GET /api/spotify/search?q=...`
-- `GET /api/queue`
-- `POST /api/queue`
-- `PATCH /api/queue/:id`
-- `GET /api/analytics`
+- `GET /api/public/spotify/search?q=...`
+- `POST /api/public/request`
+- `GET /api/public/queue`
+- `GET /api/public/feed`
 
-## Local development (Express)
+### Admin endpoints (auth required)
+
+Send `Authorization: Basic <base64(username:password)>`
+
+- `POST /api/admin/login`
+- `GET /api/admin/session`
+- `GET /api/admin/queue`
+- `PATCH /api/admin/queue/:id`
+- `POST /api/admin/bulk`
+- `GET /api/admin/analytics`
+
+## Dance-specific request fields
+
+Requests now capture:
+
+- dance moment (`anytime`, `grand_entrance`, `warmup`, `peak_hour`, `slow_dance`, `last_dance`)
+- energy level (1-5)
+- vibe tags
+- dedication message
+
+These fields feed priority scoring and analytics.
+
+## Local development
 
 1. Install dependencies:
    - `npm install`
 2. Set Spotify credentials:
    - `SPOTIFY_CLIENT_ID`
    - `SPOTIFY_CLIENT_SECRET`
-3. Start server:
+3. (Optional) override admin credentials:
+   - `ADMIN_USERNAME`
+   - `ADMIN_PASSWORD`
+4. Start server:
    - `npm start`
-4. Open:
+5. Open:
    - `http://localhost:3000`
 
-## Cloudflare Worker + D1 setup
+## Cloudflare Worker + D1
 
 1. Install dependencies:
    - `npm install`
-2. Login to Cloudflare:
+2. Login:
    - `npx wrangler login`
-3. Create D1 database (once):
-   - `npx wrangler d1 create music-queue`
-4. Put your `database_id` in `wrangler.toml`.
-5. Apply migrations:
+3. Apply migrations:
    - Local: `npm run cf:migrate:local`
    - Remote: `npm run cf:migrate:remote`
-6. Set Worker secrets:
+4. Set Spotify secrets:
    - `npx wrangler secret put SPOTIFY_CLIENT_ID`
    - `npx wrangler secret put SPOTIFY_CLIENT_SECRET`
-7. Run locally with Worker runtime:
-   - `npm run cf:dev`
-8. Deploy API:
+5. Deploy API:
    - `npm run cf:deploy`
 
-## Frontend API config
+## Frontend API target
 
-Edit `public/js/config.js` and point `apiBaseUrl` to your deployed Worker URL.
-The current config already uses same-origin API on localhost and Worker API in production.
+`public/js/config.js` automatically uses:
 
-Example:
+- local API when on localhost
+- `https://music-queue-api.noahmathmaster.workers.dev` in production
 
-```js
-window.APP_CONFIG = {
-  apiBaseUrl: 'https://music-queue-api.your-subdomain.workers.dev'
-};
-```
-
-## Why your previous Cloudflare 404 happened
-
-Your frontend was calling a Worker URL that did not match the active Worker service and `config.js` contained a debugger URL value.
-
-Use the Worker URL from `wrangler deploy` output and keep `public/js/config.js` aligned with that URL.
+If your Worker URL changes, update `apiBaseUrl` in `public/js/config.js`.
