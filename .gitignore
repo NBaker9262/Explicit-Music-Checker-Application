@@ -3,6 +3,8 @@ dist
 build
 coverage
 .env
+.env.*
+.dev.vars
 .DS_Store
 .idea
 .vscode
@@ -12,4 +14,6 @@ coverage
 *.swp
 *.swo
 *.pid
-wrangler.toml
+.wrangler/state/
+cloudflare/secrets.json
+cloudflare/secrets.local.json

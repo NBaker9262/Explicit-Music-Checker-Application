@@ -27,6 +27,10 @@ body {
     color: var(--text);
 }
 
+body.modal-open {
+    overflow: hidden;
+}
+
 .app-bg {
     background:
         radial-gradient(circle at 8% 0%, #ffffff 0, rgba(255, 255, 255, 0) 40%),
@@ -400,8 +404,10 @@ select:focus {
     font-size: 0.86rem;
 }
 
-.search-sentinel {
-    height: 2px;
+.load-more-wrap {
+    margin-top: 12px;
+    display: flex;
+    justify-content: center;
 }
 
 .selected-song,
@@ -591,6 +597,32 @@ select:focus {
     padding: 16px;
     display: grid;
     gap: 10px;
+}
+
+.request-overlay-card {
+    width: min(560px, 100%);
+}
+
+.overlay-head {
+    align-items: center;
+    margin-bottom: 2px;
+}
+
+.icon-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface-soft);
+    color: var(--text);
+    font-size: 1.3rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.icon-btn:hover {
+    background: #eef3f6;
+    border-color: #d2dbe2;
 }
 
 .modal-card h3 {

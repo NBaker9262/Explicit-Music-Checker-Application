@@ -31,19 +31,9 @@
       </div>
       <p id="searchStatus" class="status-message" aria-live="polite"></p>
       <div id="searchResults" class="results-grid"></div>
-      <div id="searchSentinel" class="search-sentinel" aria-hidden="true"></div>
-    </section>
-
-    <section class="panel" id="selectedPanel" hidden>
-      <h2>Send Request</h2>
-      <div id="selectedSong" class="selected-song"></div>
-      <form id="requestForm" class="form-grid request-form">
-        <label for="requesterName">Your name</label>
-        <input id="requesterName" type="text" maxlength="80" required>
-
-        <button class="btn btn-primary" type="submit">Submit Request</button>
-      </form>
-      <p id="requestStatus" class="status-message" aria-live="polite"></p>
+      <div class="load-more-wrap">
+        <button id="loadMoreBtn" class="btn" type="button" hidden>Load More</button>
+      </div>
     </section>
 
     <section class="panel">
@@ -54,6 +44,22 @@
       <div id="approvedList" class="queue-list"></div>
     </section>
   </main>
+
+  <div id="requestOverlay" class="modal request-overlay" hidden>
+    <div class="modal-card request-overlay-card" role="dialog" aria-modal="true" aria-labelledby="requestOverlayTitle">
+      <div class="panel-head overlay-head">
+        <h3 id="requestOverlayTitle">Send Request</h3>
+        <button id="closeRequestOverlayBtn" class="icon-btn" type="button" aria-label="Close request form">&times;</button>
+      </div>
+      <div id="selectedSong" class="selected-song"></div>
+      <form id="requestForm" class="form-grid request-form">
+        <label for="requesterName">Your name</label>
+        <input id="requesterName" type="text" maxlength="80" required>
+        <button class="btn btn-primary" type="submit">Submit Request</button>
+      </form>
+      <p id="requestStatus" class="status-message" aria-live="polite"></p>
+    </div>
+  </div>
 
   <div id="rateLimitModal" class="modal" hidden>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="rateLimitTitle">

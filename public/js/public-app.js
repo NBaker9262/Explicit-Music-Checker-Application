@@ -2,12 +2,13 @@ const searchInput = document.getElementById('searchInput');
 const searchBtn = document.getElementById('searchBtn');
 const searchStatus = document.getElementById('searchStatus');
 const searchResults = document.getElementById('searchResults');
-const searchSentinel = document.getElementById('searchSentinel');
+const loadMoreBtn = document.getElementById('loadMoreBtn');
 const albumViewBar = document.getElementById('albumViewBar');
 const albumBackBtn = document.getElementById('albumBackBtn');
 const albumViewTitle = document.getElementById('albumViewTitle');
 
-const selectedPanel = document.getElementById('selectedPanel');
+const requestOverlay = document.getElementById('requestOverlay');
+const closeRequestOverlayBtn = document.getElementById('closeRequestOverlayBtn');
 const selectedSong = document.getElementById('selectedSong');
 const requestForm = document.getElementById('requestForm');
 const submitBtn = requestForm.querySelector('button[type="submit"]');
@@ -22,7 +23,6 @@ const closeRateLimitModalBtn = document.getElementById('closeRateLimitModalBtn')
 
 let selectedTrack = null;
 let cooldownTimer = null;
-let searchObserver = null;
 let searchPageToken = 0;
 
 const REQUEST_COOLDOWN_KEY = 'request_cooldown_until';
@@ -166,11 +166,10 @@ function normalizeResultKind(item) {
 
 function renderSelectedTrack() {
   if (!selectedTrack) {
-    selectedPanel.hidden = true;
+    selectedSong.innerHTML = '';
     return;
   }
 
-  selectedPanel.hidden = false;
   selectedSong.innerHTML = `
     <img src="${escapeHtml(safeImageUrl(selectedTrack.albumImage))}" alt="Album art for ${escapeHtml(selectedTrack.name)}">
     <div>
@@ -181,16 +180,39 @@ function renderSelectedTrack() {
   `;
 }
 
+function updateLoadMoreButton() {
+  if (!loadMoreBtn) return;
+  const canPaginate = searchState.view === 'search' && Boolean(searchState.query) && searchState.totalLoaded > 0;
+  const shouldShow = canPaginate && (searchState.hasMore || searchState.loading);
+  loadMoreBtn.hidden = !shouldShow;
+  loadMoreBtn.disabled = searchState.loading || !searchState.hasMore;
+  loadMoreBtn.textContent = searchState.loading ? 'Loading...' : 'Load More';
+}
+
+function openRequestOverlay() {
+  if (!requestOverlay) return;
+  requestOverlay.hidden = false;
+  document.body.classList.add('modal-open');
+  requesterNameInput?.focus();
+}
+
+function closeRequestOverlay() {
+  selectedTrack = null;
+  renderSelectedTrack();
+  requestForm.reset();
+  setRequestStatus('');
+  if (requestOverlay) requestOverlay.hidden = true;
+  document.body.classList.remove('modal-open');
+}
+
 function chooseTrack(track) {
-  // Freeze infinite paging while user is completing a request.
-  searchPageToken += 1;
-  searchState.hasMore = false;
-  searchState.loading = false;
   selectedTrack = track;
   hideSuggestions();
   renderSelectedTrack();
+  requestForm.reset();
   setRequestStatus('');
-  requestForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  updateCooldownUi();
+  openRequestOverlay();
 }
 
 function hideSuggestions() {
@@ -304,6 +326,7 @@ async function loadSearchPage({ append = false } = {}) {
   if (append && !searchState.hasMore) return;
 
   searchState.loading = true;
+  updateLoadMoreButton();
   setSearchStatus(append ? 'Loading more...' : 'Searching...');
   const requestToken = ++searchPageToken;
 
@@ -331,18 +354,22 @@ async function loadSearchPage({ append = false } = {}) {
 
     if (!searchState.totalLoaded) {
       setSearchStatus('No results.');
+      updateLoadMoreButton();
       return;
     }
 
     setSearchStatus(searchState.hasMore
-      ? `${searchState.totalLoaded} result(s). Scroll for more.`
+      ? `${searchState.totalLoaded} result(s). Use Load More for additional songs.`
       : `${searchState.totalLoaded} result(s).`);
+    updateLoadMoreButton();
   } catch (error) {
     if (!append) renderResults([]);
     searchState.hasMore = false;
     setSearchStatus(error.message || 'Search failed.', true);
+    updateLoadMoreButton();
   } finally {
     searchState.loading = false;
+    updateLoadMoreButton();
   }
 }
 
@@ -365,6 +392,7 @@ function startSearch({ type = 'all' } = {}) {
   searchState.loading = false;
   searchState.view = 'search';
   searchState.albumSnapshot = null;
+  updateLoadMoreButton();
 
   loadSearchPage({ append: false });
 }
@@ -401,8 +429,10 @@ async function openAlbum(albumItem) {
     const albumName = payload.album?.name || albumItem.name || 'Album';
     showAlbumViewBar(albumName);
     setSearchStatus(`${searchState.items.length} track(s) in ${albumName}.`);
+    updateLoadMoreButton();
   } catch (error) {
     setSearchStatus(error.message || 'Unable to load album tracks.', true);
+    updateLoadMoreButton();
   }
 }
 
@@ -426,33 +456,16 @@ function backFromAlbumView() {
 
   renderResults(searchState.items);
   setSearchStatus(searchState.hasMore
-    ? `${searchState.totalLoaded} result(s). Scroll for more.`
+    ? `${searchState.totalLoaded} result(s). Use Load More for additional songs.`
     : `${searchState.totalLoaded} result(s).`);
-}
-
-function initSearchObserver() {
-  if (!searchSentinel) return;
-
-  if (searchObserver) {
-    searchObserver.disconnect();
-    searchObserver = null;
-  }
-
-  searchObserver = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      if (!entry.isIntersecting) return;
-      if (selectedTrack) return;
-      if (searchState.view !== 'search' || !searchState.query || !searchState.hasMore || searchState.loading) return;
-      loadSearchPage({ append: true });
-    });
-  }, { rootMargin: '280px 0px' });
-
-  searchObserver.observe(searchSentinel);
+  updateLoadMoreButton();
 }
 
 function resetToDefaultPage() {
   selectedTrack = null;
   renderSelectedTrack();
+  if (requestOverlay) requestOverlay.hidden = true;
+  document.body.classList.remove('modal-open');
   requestForm.reset();
   searchInput.value = '';
   searchResults.innerHTML = '';
@@ -470,6 +483,7 @@ function resetToDefaultPage() {
   searchState.items = [];
   searchState.view = 'search';
   searchState.albumSnapshot = null;
+  updateLoadMoreButton();
 }
 
 async function submitRequest(event) {
@@ -576,16 +590,27 @@ searchInput.addEventListener('keydown', (event) => {
     startSearch({ type: 'all' });
   }
 });
+loadMoreBtn?.addEventListener('click', () => {
+  loadSearchPage({ append: true });
+});
 
 albumBackBtn?.addEventListener('click', backFromAlbumView);
 requestForm.addEventListener('submit', submitRequest);
+closeRequestOverlayBtn?.addEventListener('click', closeRequestOverlay);
+requestOverlay?.addEventListener('click', (event) => {
+  if (event.target === requestOverlay) closeRequestOverlay();
+});
 closeRateLimitModalBtn?.addEventListener('click', hideRateLimitModal);
 rateLimitModal?.addEventListener('click', (event) => {
   if (event.target === rateLimitModal) hideRateLimitModal();
 });
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  if (requestOverlay && !requestOverlay.hidden) closeRequestOverlay();
+  if (rateLimitModal && !rateLimitModal.hidden) hideRateLimitModal();
+});
 
-initSearchObserver();
 loadLiveQueue();
 startCooldownTimer();
+updateLoadMoreButton();
 setInterval(loadLiveQueue, 8000);
-

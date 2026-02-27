@@ -1,0 +1,12 @@
+name = "music-queue-api"
+main = "cloudflare/worker.js"
+compatibility_date = "2026-02-25"
+
+[vars]
+ALLOWED_ORIGIN = "https://explicit-music-checker-application.pages.dev,https://explicit-music-checker-application.noahmathmaster.workers.dev"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "music-queue"
+database_id = "e1c3bcef-caaf-40a7-8cde-6927e92bcbfa"
+migrations_dir = "cloudflare/migrations"

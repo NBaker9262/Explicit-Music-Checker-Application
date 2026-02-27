@@ -15,12 +15,10 @@ Legacy pages (`/submit.html`, `/queue.html`, `/analytics.html`) now redirect.
 
 ## Admin credentials
 
-This build uses:
+Admin credentials are required and must be configured via environment variables:
 
-- Username: `admin`
-- Password: `D3f3nd3rs`
-
-The same defaults are in code, and also set in `wrangler.toml` vars.
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
 
 ## API overview
 
@@ -92,7 +90,7 @@ Notes:
    - `SPOTIFY_CLIENT_SECRET`
 3. (Optional) set OpenAI moderation key:
    - `OPENAI_API_KEY`
-4. (Optional) override admin credentials:
+4. Set admin credentials:
    - `ADMIN_USERNAME`
    - `ADMIN_PASSWORD`
 5. Start server:
@@ -105,20 +103,43 @@ Notes:
 1. Install dependencies:
    - `npm install`
 2. Login:
-   - `npx wrangler login`
+   - `npm run cf:whoami`
+   - if needed: `npx wrangler login`
 3. Apply migrations:
+   - Check pending: `npm run cf:migrate:list:remote`
    - Local: `npm run cf:migrate:local`
    - Remote: `npm run cf:migrate:remote`
-4. Set Spotify secrets:
-   - `npx wrangler secret put SPOTIFY_CLIENT_ID`
-   - `npx wrangler secret put SPOTIFY_CLIENT_SECRET`
-5. Set OpenAI moderation key:
-   - `npx wrangler secret put OPENAI_API_KEY`
-6. (Optional) disable lyrics moderation:
-   - `npx wrangler secret put DISABLE_LYRICS_MODERATION`
+4. Set allowed frontend origins:
+   - set `ALLOWED_ORIGIN` to a comma-separated list of trusted frontend domains
+5. Set Spotify secrets:
+   - `npm run cf:secret:put -- SPOTIFY_CLIENT_ID`
+   - `npm run cf:secret:put -- SPOTIFY_CLIENT_SECRET`
+6. Set OpenAI moderation key:
+   - `npm run cf:secret:put -- OPENAI_API_KEY`
+7. Set admin credentials:
+   - `npm run cf:secret:put -- ADMIN_USERNAME`
+   - `npm run cf:secret:put -- ADMIN_PASSWORD`
+8. (Optional) disable lyrics moderation:
+   - `npm run cf:secret:put -- DISABLE_LYRICS_MODERATION`
    - enter `1` when prompted
-7. Deploy API:
+9. (Optional) manage secrets in bulk:
+   - copy `cloudflare/secrets.example.json` to a local untracked file (for example `cloudflare/secrets.json`)
+   - run: `npm run cf:secret:bulk -- cloudflare/secrets.json`
+10. Deploy API:
    - `npm run cf:deploy`
+
+## Wrangler command quick reference
+
+- `npm run cf:whoami` show active Cloudflare account and token scopes
+- `npm run cf:d1:list` list D1 databases
+- `npm run cf:migrate:list:local` list local pending migrations
+- `npm run cf:migrate:list:remote` list remote pending migrations
+- `npm run cf:secret:list` list Worker secrets
+- `npm run cf:secret:put -- <KEY>` create/update a secret
+- `npm run cf:secret:delete -- <KEY>` remove a secret
+- `npm run cf:secret:bulk -- <FILE>` upload secrets from JSON file
+- `npm run cf:deployments` list recent Worker deployments
+- `npm run cf:tail` stream Worker logs
 
 ## Frontend API target
 

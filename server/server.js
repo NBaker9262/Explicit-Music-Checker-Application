@@ -389,8 +389,9 @@ function parseSetOrder(value) {
 }
 
 function getAdminCredentials() {
-  const username = sanitizeText(process.env.ADMIN_USERNAME || 'admin', 80) || 'admin';
-  const password = sanitizeText(process.env.ADMIN_PASSWORD || 'D3f3nd3rs', 120) || 'D3f3nd3rs';
+  const username = sanitizeText(process.env.ADMIN_USERNAME || '', 80);
+  const password = sanitizeText(process.env.ADMIN_PASSWORD || '', 120);
+  if (!username || !password) return null;
   return { username, password };
 }
 
@@ -412,6 +413,7 @@ function decodeBase64(value) {
 
 function isAdminAuthorized(req) {
   const credentials = getAdminCredentials();
+  if (!credentials) return false;
   const parsed = parseAuthorizationHeader(req.get('Authorization'));
   const expectedToken = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
 
@@ -427,6 +429,10 @@ function isAdminAuthorized(req) {
 }
 
 function requireAdmin(req, res) {
+  if (!getAdminCredentials()) {
+    res.status(500).json({ error: 'Admin credentials are not configured on this server.' });
+    return false;
+  }
   if (isAdminAuthorized(req)) return true;
   res.set('WWW-Authenticate', 'Basic realm="Dance Admin"');
   res.status(401).json({ error: 'Admin authorization required' });
@@ -619,6 +625,9 @@ app.get('/api/health', (req, res) => {
 
 app.post('/api/admin/login', (req, res) => {
   const credentials = getAdminCredentials();
+  if (!credentials) {
+    return res.status(500).json({ error: 'Admin credentials are not configured on this server.' });
+  }
   const username = sanitizeText(req.body?.username, 80);
   const password = sanitizeText(req.body?.password, 120);
 
@@ -637,6 +646,9 @@ app.post('/api/admin/login', (req, res) => {
 app.get('/api/admin/session', (req, res) => {
   if (!requireAdmin(req, res)) return;
   const credentials = getAdminCredentials();
+  if (!credentials) {
+    return res.status(500).json({ error: 'Admin credentials are not configured on this server.' });
+  }
   res.json({ ok: true, username: credentials.username });
 });
 

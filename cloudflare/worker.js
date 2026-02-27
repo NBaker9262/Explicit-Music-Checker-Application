@@ -802,8 +802,9 @@ function projectPublicQueueItem(item) {
   };
 }
 function getAdminCredentials(env) {
-  const username = sanitizeText(env.ADMIN_USERNAME || 'admin', 80) || 'admin';
-  const password = sanitizeText(env.ADMIN_PASSWORD || 'D3f3nd3rs', 120) || 'D3f3nd3rs';
+  const username = sanitizeText(env.ADMIN_USERNAME || '', 80);
+  const password = sanitizeText(env.ADMIN_PASSWORD || '', 120);
+  if (!username || !password) return null;
   return { username, password };
 }
 
@@ -825,6 +826,7 @@ function parseAuthorizationHeader(rawHeader) {
 
 function isAdminAuthorized(request, env) {
   const credentials = getAdminCredentials(env);
+  if (!credentials) return false;
   const parsed = parseAuthorizationHeader(request.headers.get('Authorization'));
   const expectedToken = btoa(`${credentials.username}:${credentials.password}`);
 
@@ -846,6 +848,10 @@ function unauthorizedResponse() {
     401,
     { 'WWW-Authenticate': 'Basic realm="Dance Admin"' }
   );
+}
+
+function adminCredentialsMissingResponse() {
+  return json({ error: 'Admin credentials are not configured on this Worker.' }, 500);
 }
 
 function buildCreatePayload(body) {
@@ -1334,6 +1340,7 @@ async function handleAdminLogin(request, env) {
   }
 
   const credentials = getAdminCredentials(env);
+  if (!credentials) return adminCredentialsMissingResponse();
   const username = sanitizeText(body.username, 80);
   const password = sanitizeText(body.password, 120);
 
@@ -1345,8 +1352,9 @@ async function handleAdminLogin(request, env) {
 }
 
 async function handleAdminSession(request, env) {
-  if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
   const credentials = getAdminCredentials(env);
+  if (!credentials) return adminCredentialsMissingResponse();
+  if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
   return json({ ok: true, username: credentials.username });
 }
 
@@ -1761,6 +1769,7 @@ async function handleSpotifyAlbumTracks(request, env, rawAlbumId) {
   return json({ album: albumInfo, items: tracks });
 }
 function requireAdmin(request, env) {
+  if (!getAdminCredentials(env)) return adminCredentialsMissingResponse();
   if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
   return null;
 }
