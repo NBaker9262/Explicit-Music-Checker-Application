@@ -5,11 +5,19 @@ const searchResults = document.getElementById('searchResults');
 const selectedPanel = document.getElementById('selectedPanel');
 const selectedSong = document.getElementById('selectedSong');
 const requestForm = document.getElementById('requestForm');
+const submitBtn = requestForm.querySelector('button[type="submit"]');
 const requestStatus = document.getElementById('requestStatus');
 const queueStatus = document.getElementById('queueStatus');
 const approvedList = document.getElementById('approvedList');
+const requesterNameInput = document.getElementById('requesterName');
+const rateLimitModal = document.getElementById('rateLimitModal');
+const rateLimitMessage = document.getElementById('rateLimitMessage');
+const closeRateLimitModalBtn = document.getElementById('closeRateLimitModalBtn');
 
 let selectedTrack = null;
+let cooldownTimer = null;
+
+const REQUEST_COOLDOWN_KEY = 'request_cooldown_until';
 
 function escapeHtml(value) {
   return String(value || '')
@@ -49,6 +57,92 @@ function setQueueStatus(message, isError = false) {
   queueStatus.className = `status-message${isError ? ' error' : ''}`;
 }
 
+function parseIsoDateMs(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatRemaining(seconds) {
+  const safe = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(safe / 60);
+  const remainingSeconds = safe % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+}
+
+function showRateLimitModal(message) {
+  if (!rateLimitModal || !rateLimitMessage) return;
+  rateLimitMessage.textContent = message;
+  rateLimitModal.hidden = false;
+}
+
+function hideRateLimitModal() {
+  if (!rateLimitModal) return;
+  rateLimitModal.hidden = true;
+}
+
+function getCooldownEndMs() {
+  const stored = String(localStorage.getItem(REQUEST_COOLDOWN_KEY) || '').trim();
+  return parseIsoDateMs(stored);
+}
+
+function setCooldown(nextAllowedAt) {
+  const parsed = parseIsoDateMs(nextAllowedAt);
+  if (parsed === null) return;
+  localStorage.setItem(REQUEST_COOLDOWN_KEY, new Date(parsed).toISOString());
+  startCooldownTimer();
+}
+
+function clearCooldown() {
+  localStorage.removeItem(REQUEST_COOLDOWN_KEY);
+}
+
+function updateCooldownUi() {
+  const cooldownEndMs = getCooldownEndMs();
+  const remainingMs = cooldownEndMs === null ? 0 : cooldownEndMs - Date.now();
+
+  if (remainingMs <= 0) {
+    if (submitBtn) submitBtn.disabled = false;
+    clearCooldown();
+    return false;
+  }
+
+  const remainingSeconds = Math.ceil(remainingMs / 1000);
+  if (submitBtn) submitBtn.disabled = true;
+  setRequestStatus(`Please wait ${formatRemaining(remainingSeconds)} before sending another request.`, true);
+  return true;
+}
+
+function startCooldownTimer() {
+  if (cooldownTimer) {
+    clearInterval(cooldownTimer);
+    cooldownTimer = null;
+  }
+
+  const active = updateCooldownUi();
+  if (!active) return;
+
+  cooldownTimer = setInterval(() => {
+    const stillActive = updateCooldownUi();
+    if (!stillActive && cooldownTimer) {
+      clearInterval(cooldownTimer);
+      cooldownTimer = null;
+      setRequestStatus('');
+    }
+  }, 1000);
+}
+
+function resetToDefaultPage() {
+  selectedTrack = null;
+  renderSelectedTrack();
+  requestForm.reset();
+  searchInput.value = '';
+  searchResults.innerHTML = '';
+  setRequestStatus('');
+  setSearchStatus('');
+}
+
 function confidenceLabel(confidence) {
   if (confidence === 'clean') return 'Clean';
   if (confidence === 'explicit') return 'Explicit';
@@ -72,6 +166,20 @@ function renderSelectedTrack() {
   `;
 }
 
+function chooseTrack(track) {
+  selectedTrack = track;
+  renderSelectedTrack();
+  setRequestStatus('');
+  requestForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function searchByArtist(artistName) {
+  const artist = String(artistName || '').trim();
+  if (!artist) return;
+  searchInput.value = artist;
+  searchSongs();
+}
+
 function renderSearchResults(items) {
   searchResults.innerHTML = '';
 
@@ -83,23 +191,40 @@ function renderSearchResults(items) {
   items.forEach((track) => {
     const card = document.createElement('article');
     card.className = 'song-card';
-    card.innerHTML = `
-      <img src="${escapeHtml(safeImageUrl(track.albumImage))}" alt="Album art for ${escapeHtml(track.name)}">
-      <div class="song-card-body">
-        <h3>${escapeHtml(track.name)}</h3>
-        <p>${escapeHtml((track.artists || []).join(', '))}</p>
-      </div>
-      <div class="song-card-actions">
-        <button class="btn" type="button">Choose</button>
-      </div>
-    `;
 
-    card.querySelector('button').addEventListener('click', () => {
-      selectedTrack = track;
-      renderSelectedTrack();
-      setRequestStatus('Song selected. Enter your name and submit.');
-      requestForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const coverBtn = document.createElement('button');
+    coverBtn.className = 'song-card-select';
+    coverBtn.type = 'button';
+    coverBtn.setAttribute('aria-label', `Select ${track.name}`);
+    coverBtn.innerHTML = `<img src="${escapeHtml(safeImageUrl(track.albumImage))}" alt="Album art for ${escapeHtml(track.name)}">`;
+    coverBtn.addEventListener('click', () => chooseTrack(track));
+
+    const body = document.createElement('div');
+    body.className = 'song-card-body';
+
+    const titleBtn = document.createElement('button');
+    titleBtn.className = 'song-link';
+    titleBtn.type = 'button';
+    titleBtn.textContent = String(track.name || '');
+    titleBtn.addEventListener('click', () => chooseTrack(track));
+
+    const artistRow = document.createElement('p');
+    artistRow.className = 'song-artists';
+    (track.artists || []).forEach((artist, index) => {
+      if (index > 0) artistRow.appendChild(document.createTextNode(', '));
+      const artistBtn = document.createElement('button');
+      artistBtn.className = 'artist-link';
+      artistBtn.type = 'button';
+      artistBtn.textContent = String(artist || '');
+      artistBtn.addEventListener('click', () => searchByArtist(artist));
+      artistRow.appendChild(artistBtn);
     });
+
+    body.appendChild(titleBtn);
+    body.appendChild(artistRow);
+
+    card.appendChild(coverBtn);
+    card.appendChild(body);
 
     searchResults.appendChild(card);
   });
@@ -132,13 +257,19 @@ async function searchSongs() {
 
 async function submitRequest(event) {
   event.preventDefault();
+  hideRateLimitModal();
 
   if (!selectedTrack) {
     setRequestStatus('Choose a song first.', true);
     return;
   }
 
-  const requesterName = document.getElementById('requesterName').value.trim();
+  if (updateCooldownUi()) {
+    showRateLimitModal('Please wait before sending another request. One request is allowed every 10 minutes.');
+    return;
+  }
+
+  const requesterName = requesterNameInput.value.trim();
   if (!requesterName) {
     setRequestStatus('Your name is required.', true);
     return;
@@ -163,12 +294,24 @@ async function submitRequest(event) {
     });
 
     const payload = await response.json();
+    if (response.status === 429) {
+      if (payload.nextAllowedAt) setCooldown(payload.nextAllowedAt);
+      const seconds = Math.max(1, Number(payload.retryAfterSec) || 0);
+      const delayText = formatRemaining(seconds);
+      const message = `Request delay active. Please wait ${delayText} before submitting another song.`;
+      setRequestStatus(message, true);
+      showRateLimitModal(message);
+      return;
+    }
+
     if (!response.ok) {
       throw new Error(payload.error || 'Request failed');
     }
 
-    requestForm.reset();
-    setRequestStatus('Request submitted.');
+    if (payload.nextAllowedAt) setCooldown(payload.nextAllowedAt);
+    resetToDefaultPage();
+    setSearchStatus('Request sent.');
+    showRateLimitModal('Request received. You can submit another song after 10 minutes.');
     await loadLiveQueue();
   } catch (error) {
     setRequestStatus(error.message || 'Request failed.', true);
@@ -179,7 +322,7 @@ function renderLiveQueue(items) {
   approvedList.innerHTML = '';
 
   if (!items.length) {
-    approvedList.innerHTML = '<p class="empty-state">No approved songs yet.</p>';
+    approvedList.innerHTML = '<p class="empty-state">No songs in queue yet.</p>';
     return;
   }
 
@@ -192,7 +335,6 @@ function renderLiveQueue(items) {
         <div>
           <h3>${escapeHtml(item.trackName)}</h3>
           <p>${escapeHtml((item.artists || []).join(', '))}</p>
-          <p><span class="badge badge-priority badge-priority-${escapeHtml(item.priorityTier || 'low')}">${escapeHtml(String(item.voteCount || 1))} vote(s)</span></p>
         </div>
       </div>
     `;
@@ -211,7 +353,7 @@ async function loadLiveQueue() {
     }
 
     renderLiveQueue(payload.items || []);
-    setQueueStatus(`Live now - updated ${new Date().toLocaleTimeString()}`);
+    setQueueStatus('Live queue is on.');
   } catch (error) {
     setQueueStatus(error.message || 'Unable to load queue.', true);
   }
@@ -226,6 +368,11 @@ searchInput.addEventListener('keydown', (event) => {
 });
 
 requestForm.addEventListener('submit', submitRequest);
+closeRateLimitModalBtn?.addEventListener('click', hideRateLimitModal);
+rateLimitModal?.addEventListener('click', (event) => {
+  if (event.target === rateLimitModal) hideRateLimitModal();
+});
 
 loadLiveQueue();
+startCooldownTimer();
 setInterval(loadLiveQueue, 8000);

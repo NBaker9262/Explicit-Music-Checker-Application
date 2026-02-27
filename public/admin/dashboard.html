@@ -3,15 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Admin Dashboard</title>
+<title>Queue Control</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body class="app-bg">
   <main class="page-shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Dance Admin Console</p>
-        <h1>Queue Control Center</h1>
+        <p class="eyebrow">Admin</p>
+        <h1>Queue Board</h1>
       </div>
       <nav class="topbar-nav">
         <a href="/">Public Page</a>
@@ -21,70 +21,40 @@
 
     <section class="panel">
       <div class="panel-head">
-        <h2>Queue Filters</h2>
+        <h2>Queue Board</h2>
         <button id="refreshAdminBtn" class="btn" type="button">Refresh</button>
       </div>
-      <div class="filter-grid">
-        <label>Status
-          <select id="adminStatusFilter">
-            <option value="">All</option>
-            <option value="pending">Pending</option>
-            <option value="approved">Approved</option>
-            <option value="rejected">Rejected</option>
-          </select>
-        </label>
-        <label>Confidence
-          <select id="adminConfidenceFilter">
-            <option value="">All</option>
-            <option value="clean">Clean</option>
-            <option value="explicit">Explicit</option>
-            <option value="unknown">Unknown</option>
-          </select>
-        </label>
-        <label>Dance moment
-          <select id="adminMomentFilter">
-            <option value="">All</option>
-            <option value="anytime">Anytime</option>
-            <option value="grand_entrance">Grand Entrance</option>
-            <option value="warmup">Warmup</option>
-            <option value="peak_hour">Peak Hour</option>
-            <option value="slow_dance">Slow Dance</option>
-            <option value="last_dance">Last Dance</option>
-          </select>
-        </label>
-        <label>Search
-          <input id="adminSearchInput" type="text" placeholder="Track, artist, requester">
-        </label>
-      </div>
-      <div class="queue-actions">
-        <button id="bulkApproveBtn" class="btn" type="button">Bulk Approve Clean High Priority</button>
-        <button id="bulkRejectBtn" class="btn" type="button">Bulk Reject Explicit</button>
-      </div>
       <p id="adminStatusMessage" class="status-message" aria-live="polite"></p>
-      <div id="adminQueueList" class="queue-list"></div>
+
+      <div class="queue-section">
+        <h3>Queue</h3>
+        <p class="inline-hint">Drag to reorder live songs.</p>
+        <div id="approvedQueueList" class="queue-list"></div>
+      </div>
+
+      <div class="queue-section">
+        <h3>Flagged</h3>
+        <p class="inline-hint">Keeps place in line and is skipped.</p>
+        <div id="flaggedQueueList" class="queue-list"></div>
+      </div>
+
+      <div class="queue-section">
+        <h3>Explicit</h3>
+        <p class="inline-hint">Recorded only and never played.</p>
+        <div id="explicitQueueList" class="queue-list"></div>
+      </div>
     </section>
 
     <section class="panel">
-      <h2>Analytics</h2>
-      <p id="adminAnalyticsStatus" class="status-message" aria-live="polite"></p>
-      <div id="adminTotalsGrid" class="analytics-grid"></div>
-      <div class="analytics-layout">
-        <article>
-          <h3>Top Artists</h3>
-          <div id="adminTopArtists" class="analytics-list"></div>
-        </article>
-        <article>
-          <h3>Top Tracks</h3>
-          <div id="adminTopTracks" class="analytics-list"></div>
-        </article>
-        <article>
-          <h3>Dance Moments</h3>
-          <div id="adminDanceMoments" class="analytics-list"></div>
-        </article>
-        <article>
-          <h3>Vibes</h3>
-          <div id="adminVibeTags" class="analytics-list"></div>
-        </article>
+      <h2>Controls</h2>
+      <p id="adminControlStatus" class="status-message" aria-live="polite"></p>
+      <div class="controls-grid">
+        <button id="playNextBtn" class="btn btn-primary" type="button">Play Next</button>
+        <button id="clearApprovedBtn" class="btn" type="button">Clear Queue</button>
+        <button id="clearFlaggedBtn" class="btn" type="button">Clear Flagged</button>
+        <button id="clearExplicitBtn" class="btn" type="button">Clear Explicit</button>
+        <button id="renumberBtn" class="btn" type="button">Reorder</button>
+        <button id="clearAllBtn" class="btn btn-danger" type="button">Clear All</button>
       </div>
     </section>
   </main>

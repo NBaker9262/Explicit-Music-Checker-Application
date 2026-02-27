@@ -3,26 +3,26 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dance Song Requests</title>
+<title>Request Music</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body class="app-bg">
   <main class="page-shell page-public">
     <header class="hero">
       <div>
-        <p class="eyebrow">Live Dance Requests</p>
+        <p class="eyebrow">Dance Floor</p>
         <h1>Request A Song</h1>
-        <p class="hero-copy">Search, choose a track, and submit your name.</p>
+        <p class="hero-copy">Find a track and send it to the queue in seconds.</p>
       </div>
       <nav class="topbar-nav">
-        <a class="btn" href="/admin/login.html">Admin Login</a>
+        <a class="btn" href="/admin/login.html">Admin</a>
       </nav>
     </header>
 
     <section class="panel">
-      <h2>Search Spotify</h2>
+      <h2>Find Song</h2>
       <div class="search-row">
-        <input type="text" id="searchInput" placeholder="Search by song title or artist" autocomplete="off">
+        <input type="text" id="searchInput" placeholder="Song title or artist" autocomplete="off">
         <button id="searchBtn" class="btn btn-primary" type="button">Search</button>
       </div>
       <p id="searchStatus" class="status-message" aria-live="polite"></p>
@@ -30,7 +30,7 @@
     </section>
 
     <section class="panel" id="selectedPanel" hidden>
-      <h2>Submit Request</h2>
+      <h2>Send Request</h2>
       <div id="selectedSong" class="selected-song"></div>
       <form id="requestForm" class="form-grid request-form">
         <label for="requesterName">Your name</label>
@@ -44,12 +44,19 @@
     <section class="panel">
       <div class="panel-head">
         <h2>Live Queue</h2>
-        <p class="inline-hint">Auto-updates every 8 seconds</p>
       </div>
       <p id="queueStatus" class="status-message" aria-live="polite"></p>
       <div id="approvedList" class="queue-list"></div>
     </section>
   </main>
+
+  <div id="rateLimitModal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="rateLimitTitle">
+      <h3 id="rateLimitTitle">Request Delay</h3>
+      <p id="rateLimitMessage">You can submit 1 request every 10 minutes from this network.</p>
+      <button id="closeRateLimitModalBtn" class="btn btn-primary" type="button">OK</button>
+    </div>
+  </div>
 
 <script src="/js/config.js"></script>
 <script src="/js/api.js"></script>

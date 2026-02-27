@@ -40,19 +40,23 @@ Send `Authorization: Basic <base64(username:password)>`
 - `GET /api/admin/session`
 - `GET /api/admin/queue`
 - `PATCH /api/admin/queue/:id`
-- `POST /api/admin/bulk`
+- `POST /api/admin/reorder`
+- `POST /api/admin/control`
 - `GET /api/admin/analytics`
 
-## Dance-specific request fields
+## Current queue model
 
-Requests now capture:
+- `approved` songs: playable queue
+- `pending` songs: shown as `flagged`, keep line position, skipped during playback
+- `rejected` songs: shown as `explicit`, tracked only, never played
 
-- dance moment (`anytime`, `grand_entrance`, `warmup`, `peak_hour`, `slow_dance`, `last_dance`)
-- energy level (1-5)
-- vibe tags
-- dedication message
+The admin page supports drag reorder for active queue positions and bottom control actions (`play_next_approved`, clear actions, and queue renumber).
 
-These fields feed priority scoring and analytics.
+## Request rate limit
+
+- Public requests are limited to `1 request per IP every 10 minutes`.
+- API returns `429` with `retryAfterSec` and `nextAllowedAt` when limited.
+- Public UI shows a modal and cooldown timer so users know exactly when they can request again.
 
 ## Local development
 
@@ -92,3 +96,11 @@ These fields feed priority scoring and analytics.
 - `https://music-queue-api.noahmathmaster.workers.dev` in production
 
 If your Worker URL changes, update `apiBaseUrl` in `public/js/config.js`.
+
+## Production notes
+
+- Public app URL:
+  - `https://explicit-music-checker-application.noahmathmaster.workers.dev`
+- API Worker URL:
+  - `https://music-queue-api.noahmathmaster.workers.dev`
+- Public pages should call the API Worker URL via `public/js/config.js`.

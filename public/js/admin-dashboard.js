@@ -1,21 +1,20 @@
 const adminStatusMessage = document.getElementById('adminStatusMessage');
-const adminAnalyticsStatus = document.getElementById('adminAnalyticsStatus');
-const adminQueueList = document.getElementById('adminQueueList');
-const adminTotalsGrid = document.getElementById('adminTotalsGrid');
-const adminTopArtists = document.getElementById('adminTopArtists');
-const adminTopTracks = document.getElementById('adminTopTracks');
-const adminDanceMoments = document.getElementById('adminDanceMoments');
-const adminVibeTags = document.getElementById('adminVibeTags');
-
-const adminStatusFilter = document.getElementById('adminStatusFilter');
-const adminConfidenceFilter = document.getElementById('adminConfidenceFilter');
-const adminMomentFilter = document.getElementById('adminMomentFilter');
-const adminSearchInput = document.getElementById('adminSearchInput');
+const adminControlStatus = document.getElementById('adminControlStatus');
+const approvedQueueList = document.getElementById('approvedQueueList');
+const flaggedQueueList = document.getElementById('flaggedQueueList');
+const explicitQueueList = document.getElementById('explicitQueueList');
 
 const refreshAdminBtn = document.getElementById('refreshAdminBtn');
-const bulkApproveBtn = document.getElementById('bulkApproveBtn');
-const bulkRejectBtn = document.getElementById('bulkRejectBtn');
 const adminLogoutBtn = document.getElementById('adminLogoutBtn');
+
+const playNextBtn = document.getElementById('playNextBtn');
+const clearApprovedBtn = document.getElementById('clearApprovedBtn');
+const clearFlaggedBtn = document.getElementById('clearFlaggedBtn');
+const clearExplicitBtn = document.getElementById('clearExplicitBtn');
+const renumberBtn = document.getElementById('renumberBtn');
+const clearAllBtn = document.getElementById('clearAllBtn');
+
+let dragItemId = null;
 
 function escapeHtml(value) {
   return String(value || '')
@@ -40,24 +39,14 @@ function safeImageUrl(value) {
   return '';
 }
 
-function titleCase(value) {
-  return String(value || '').replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function confidenceLabel(confidence) {
-  if (confidence === 'clean') return 'Clean confidence';
-  if (confidence === 'explicit') return 'Explicit confidence';
-  return 'Unknown confidence';
-}
-
 function setStatus(message, isError = false) {
   adminStatusMessage.textContent = message;
   adminStatusMessage.className = `status-message${isError ? ' error' : ''}`;
 }
 
-function setAnalyticsStatus(message, isError = false) {
-  adminAnalyticsStatus.textContent = message;
-  adminAnalyticsStatus.className = `status-message${isError ? ' error' : ''}`;
+function setControlStatus(message, isError = false) {
+  adminControlStatus.textContent = message;
+  adminControlStatus.className = `status-message${isError ? ' error' : ''}`;
 }
 
 async function ensureAdminSession() {
@@ -81,34 +70,201 @@ async function ensureAdminSession() {
   }
 }
 
-function buildQueueQuery() {
-  const params = new URLSearchParams();
-  if (adminStatusFilter.value) params.set('status', adminStatusFilter.value);
-  if (adminConfidenceFilter.value) params.set('confidence', adminConfidenceFilter.value);
-  if (adminMomentFilter.value) params.set('danceMoment', adminMomentFilter.value);
-  if (adminSearchInput.value.trim()) params.set('q', adminSearchInput.value.trim());
-  const query = params.toString();
-  return query ? `?${query}` : '';
+function splitQueue(items) {
+  return {
+    queue: items.filter((item) => item.status === 'approved'),
+    flagged: items.filter((item) => item.status === 'pending'),
+    explicit: items.filter((item) => item.status === 'rejected')
+  };
 }
 
-async function updateItem(itemId, card) {
-  const status = card.querySelector('[data-field="status"]').value;
-  const moderationReason = card.querySelector('[data-field="moderationReason"]').value;
-  const reviewNote = card.querySelector('[data-field="reviewNote"]').value.trim();
-  const danceMoment = card.querySelector('[data-field="danceMoment"]').value;
-  const energyLevel = Number(card.querySelector('[data-field="energyLevel"]').value);
-  const setOrderRaw = card.querySelector('[data-field="setOrder"]').value.trim();
-  const djNotes = card.querySelector('[data-field="djNotes"]').value.trim();
+function statusLabel(status) {
+  if (status === 'approved') return 'queue';
+  if (status === 'pending') return 'flagged';
+  if (status === 'rejected') return 'explicit';
+  return status || 'unknown';
+}
 
-  const payload = {
-    status,
-    moderationReason,
-    reviewNote,
-    danceMoment,
-    energyLevel,
-    setOrder: setOrderRaw === '' ? null : Number(setOrderRaw),
-    djNotes
-  };
+function createStatusBadge(item) {
+  return `<span class="badge badge-${escapeHtml(item.status)}">${escapeHtml(statusLabel(item.status))}</span>`;
+}
+
+function createSongMeta(item) {
+  const artists = escapeHtml((item.artists || []).join(', '));
+  const orderLabel = Number.isInteger(item.setOrder) ? `#${item.setOrder}` : '';
+  const orderLine = item.status === 'rejected' ? '' : `<p>Line: <strong>${escapeHtml(orderLabel || '-')}</strong></p>`;
+  return `
+    <p>${artists}</p>
+    ${orderLine}
+  `;
+}
+
+function getActionButtons(item) {
+  if (item.status === 'approved') {
+    return `
+      <button class="btn" type="button" data-action="flagged">Flag</button>
+      <button class="btn btn-danger" type="button" data-action="deny">Mark Explicit</button>
+    `;
+  }
+
+  if (item.status === 'pending') {
+    return `
+      <button class="btn btn-primary" type="button" data-action="approve">Move To Queue</button>
+      <button class="btn btn-danger" type="button" data-action="deny">Mark Explicit</button>
+    `;
+  }
+
+  return `
+    <button class="btn btn-primary" type="button" data-action="approve">Move To Queue</button>
+  `;
+}
+
+function attachRowEvents(row, item) {
+  const approveBtn = row.querySelector('[data-action="approve"]');
+  const flaggedBtn = row.querySelector('[data-action="flagged"]');
+  const denyBtn = row.querySelector('[data-action="deny"]');
+
+  if (approveBtn) {
+    approveBtn.addEventListener('click', () => updateStatus(item.id, 'approved', ''));
+  }
+  if (flaggedBtn) {
+    flaggedBtn.addEventListener('click', () => updateStatus(item.id, 'pending', ''));
+  }
+  if (denyBtn) {
+    denyBtn.addEventListener('click', () => updateStatus(item.id, 'rejected', 'explicit_lyrics'));
+  }
+
+  if (item.status === 'rejected') return;
+
+  row.draggable = true;
+  row.classList.add('draggable-row');
+
+  row.addEventListener('dragstart', (event) => {
+    dragItemId = item.id;
+    row.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(item.id));
+  });
+
+  row.addEventListener('dragend', () => {
+    dragItemId = null;
+    row.classList.remove('dragging');
+    document.querySelectorAll('.drop-target').forEach((entry) => entry.classList.remove('drop-target'));
+  });
+
+  row.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    if (dragItemId === null || dragItemId === item.id) return;
+    row.classList.add('drop-target');
+  });
+
+  row.addEventListener('dragleave', () => {
+    row.classList.remove('drop-target');
+  });
+
+  row.addEventListener('drop', async (event) => {
+    event.preventDefault();
+    row.classList.remove('drop-target');
+    if (dragItemId === null || dragItemId === item.id) return;
+    await reorderQueue(dragItemId, item.id);
+  });
+}
+
+function createQueueRow(item) {
+  const row = document.createElement('article');
+  row.className = `queue-row queue-row-${item.status}`;
+  row.dataset.itemId = String(item.id);
+
+  const pendingNote = item.status === 'pending'
+    ? '<p class="pending-note">Flagged items keep line position and are skipped.</p>'
+    : '';
+
+  const deniedReason = item.status === 'rejected' && item.moderationReason
+    ? `<p class="pending-note">Reason: ${escapeHtml(item.moderationReason)}</p>`
+    : '';
+
+  const dragLabel = item.status === 'rejected'
+    ? ''
+    : '<span class="drag-label">Drag</span>';
+
+  row.innerHTML = `
+    <div class="queue-row-main">
+      <img src="${escapeHtml(safeImageUrl(item.albumImage))}" alt="Album art for ${escapeHtml(item.trackName)}">
+      <div>
+        <h4>${escapeHtml(item.trackName)}</h4>
+        <p>${createStatusBadge(item)}</p>
+        ${createSongMeta(item)}
+        ${pendingNote}
+        ${deniedReason}
+      </div>
+    </div>
+    <div class="queue-row-controls">
+      ${dragLabel}
+      ${getActionButtons(item)}
+    </div>
+  `;
+
+  attachRowEvents(row, item);
+  return row;
+}
+
+function renderSection(listEl, items, emptyMessage) {
+  listEl.innerHTML = '';
+  if (!items.length) {
+    listEl.innerHTML = `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
+    return;
+  }
+
+  items.forEach((item) => {
+    listEl.appendChild(createQueueRow(item));
+  });
+}
+
+function enableListDrop(listEl) {
+  listEl.addEventListener('dragover', (event) => {
+    event.preventDefault();
+  });
+
+  listEl.addEventListener('drop', async (event) => {
+    event.preventDefault();
+    if (dragItemId === null) return;
+    await reorderQueue(dragItemId, null);
+  });
+}
+
+async function loadQueue() {
+  setStatus('Loading queue...');
+
+  try {
+    const response = await window.adminAuth.adminFetch('/api/admin/queue');
+    const payload = await response.json();
+
+    if (response.status === 401) {
+      window.adminAuth.clearAdminToken();
+      window.location.href = '/admin/login.html';
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(payload.error || 'Unable to load queue');
+    }
+
+    const items = payload.items || [];
+    const sections = splitQueue(items);
+    renderSection(approvedQueueList, sections.queue, 'No songs in queue.');
+    renderSection(flaggedQueueList, sections.flagged, 'No flagged songs.');
+    renderSection(explicitQueueList, sections.explicit, 'No explicit songs.');
+    setStatus(`Queue loaded. ${items.length} total songs.`);
+  } catch (error) {
+    setStatus(error.message || 'Unable to load queue.', true);
+  }
+}
+
+async function updateStatus(itemId, status, moderationReason) {
+  setStatus('Saving changes...');
+
+  const payload = status === 'rejected'
+    ? { status, moderationReason: moderationReason || 'other' }
+    : { status, moderationReason: '' };
 
   try {
     const response = await window.adminAuth.adminFetch(`/api/admin/queue/${itemId}`, {
@@ -116,226 +272,83 @@ async function updateItem(itemId, card) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-
     const result = await response.json();
+
     if (!response.ok) {
-      throw new Error(result.error || 'Update failed');
+      throw new Error(result.error || 'Unable to update song');
     }
 
-    setStatus(`Updated ${result.trackName}.`);
-    await Promise.all([loadQueue(), loadAnalytics()]);
+    setStatus(`Updated: ${result.trackName}`);
+    await loadQueue();
   } catch (error) {
-    setStatus(error.message || 'Update failed.', true);
+    setStatus(error.message || 'Unable to update song.', true);
   }
 }
 
-function renderQueue(items) {
-  adminQueueList.innerHTML = '';
-
-  if (!items.length) {
-    adminQueueList.innerHTML = '<p class="empty-state">No queue items match your filters.</p>';
-    return;
-  }
-
-  items.forEach((item) => {
-    const card = document.createElement('article');
-    card.className = 'queue-card';
-
-    card.innerHTML = `
-      <div class="queue-main">
-        <img src="${escapeHtml(safeImageUrl(item.albumImage))}" alt="Album art for ${escapeHtml(item.trackName)}">
-        <div>
-          <h3>${escapeHtml(item.trackName)}</h3>
-          <p>${escapeHtml((item.artists || []).join(', '))}</p>
-          <p>
-            <span class="badge badge-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>
-            <span class="badge badge-priority badge-priority-${escapeHtml(item.priorityTier || 'low')}">Priority ${escapeHtml(item.priorityTier || 'low')} (${escapeHtml(String(item.priorityScore || 0))})</span>
-            <span class="badge badge-confidence badge-confidence-${escapeHtml(item.contentConfidence || 'unknown')}">${escapeHtml(confidenceLabel(item.contentConfidence || 'unknown'))}</span>
-          </p>
-          <p>Votes: ${escapeHtml(String(item.voteCount || 1))} | Moment: ${escapeHtml(titleCase(item.danceMoment || 'anytime'))} | Energy: ${escapeHtml(String(item.energyLevel || 3))}</p>
-          <p>Requester: ${escapeHtml(item.requesterName || 'Unknown')} (${escapeHtml(item.requesterRole || 'guest')})</p>
-          ${item.eventDate ? `<p>Event date: ${escapeHtml(item.eventDate)}</p>` : ''}
-          ${item.dedicationMessage ? `<p>Dedication: ${escapeHtml(item.dedicationMessage)}</p>` : ''}
-        </div>
-      </div>
-      <div class="queue-tools">
-        <label>Status
-          <select data-field="status">
-            <option value="pending" ${item.status === 'pending' ? 'selected' : ''}>Pending</option>
-            <option value="approved" ${item.status === 'approved' ? 'selected' : ''}>Approved</option>
-            <option value="rejected" ${item.status === 'rejected' ? 'selected' : ''}>Rejected</option>
-          </select>
-        </label>
-        <label>Moderation preset
-          <select data-field="moderationReason">
-            <option value="" ${!item.moderationReason ? 'selected' : ''}>None</option>
-            <option value="clean_version_verified" ${item.moderationReason === 'clean_version_verified' ? 'selected' : ''}>Clean Version Verified</option>
-            <option value="duplicate_request_merged" ${item.moderationReason === 'duplicate_request_merged' ? 'selected' : ''}>Duplicate Request Merged</option>
-            <option value="explicit_lyrics" ${item.moderationReason === 'explicit_lyrics' ? 'selected' : ''}>Explicit Lyrics</option>
-            <option value="violence" ${item.moderationReason === 'violence' ? 'selected' : ''}>Violence</option>
-            <option value="hate_speech" ${item.moderationReason === 'hate_speech' ? 'selected' : ''}>Hate Speech</option>
-            <option value="sexual_content" ${item.moderationReason === 'sexual_content' ? 'selected' : ''}>Sexual Content</option>
-            <option value="policy_violation" ${item.moderationReason === 'policy_violation' ? 'selected' : ''}>Policy Violation</option>
-            <option value="other" ${item.moderationReason === 'other' ? 'selected' : ''}>Other</option>
-          </select>
-        </label>
-        <label>Dance moment
-          <select data-field="danceMoment">
-            <option value="anytime" ${item.danceMoment === 'anytime' ? 'selected' : ''}>Anytime</option>
-            <option value="grand_entrance" ${item.danceMoment === 'grand_entrance' ? 'selected' : ''}>Grand Entrance</option>
-            <option value="warmup" ${item.danceMoment === 'warmup' ? 'selected' : ''}>Warmup</option>
-            <option value="peak_hour" ${item.danceMoment === 'peak_hour' ? 'selected' : ''}>Peak Hour</option>
-            <option value="slow_dance" ${item.danceMoment === 'slow_dance' ? 'selected' : ''}>Slow Dance</option>
-            <option value="last_dance" ${item.danceMoment === 'last_dance' ? 'selected' : ''}>Last Dance</option>
-          </select>
-        </label>
-        <label>Energy
-          <input data-field="energyLevel" type="number" min="1" max="5" value="${escapeHtml(String(item.energyLevel || 3))}">
-        </label>
-        <label>Set order
-          <input data-field="setOrder" type="number" min="1" max="9999" value="${item.setOrder === null ? '' : escapeHtml(String(item.setOrder))}">
-        </label>
-      </div>
-      <div class="queue-tools">
-        <label>Review note
-          <input data-field="reviewNote" type="text" maxlength="500" value="${escapeHtml(item.reviewNote || '')}">
-        </label>
-        <label>DJ notes
-          <input data-field="djNotes" type="text" maxlength="500" value="${escapeHtml(item.djNotes || '')}">
-        </label>
-      </div>
-      <div class="queue-actions">
-        <button class="btn btn-primary" type="button" data-action="save">Save Changes</button>
-      </div>
-    `;
-
-    card.querySelector('[data-action="save"]').addEventListener('click', () => updateItem(item.id, card));
-    adminQueueList.appendChild(card);
-  });
-}
-
-function renderTotals(totals) {
-  const cards = [
-    { label: 'Total Requests', value: totals.requests ?? 0 },
-    { label: 'Votes', value: totals.votes ?? 0 },
-    { label: 'Approval Rate', value: `${totals.approvalRate ?? 0}%` },
-    { label: 'Average Priority', value: totals.averagePriorityScore ?? 0 },
-    { label: 'Average Energy', value: totals.averageEnergyLevel ?? 0 },
-    { label: 'Pending High Priority', value: totals.pendingHighPriority ?? 0 }
-  ];
-
-  adminTotalsGrid.innerHTML = cards.map((card) => `
-    <article class="analytics-card">
-      <p class="analytics-card-label">${escapeHtml(card.label)}</p>
-      <p class="analytics-card-value">${escapeHtml(String(card.value))}</p>
-    </article>
-  `).join('');
-}
-
-function renderAnalyticsList(target, items, labelKey, valueKey = 'votes') {
-  if (!items || !items.length) {
-    target.innerHTML = '<p class="empty-state">No data yet.</p>';
-    return;
-  }
-
-  target.innerHTML = items.slice(0, 8).map((entry, index) => {
-    const label = labelKey === 'trackName' ? entry.trackName : entry[labelKey];
-    return `<p>${index + 1}. ${escapeHtml(titleCase(label))} <strong>${escapeHtml(String(entry[valueKey] ?? 0))}</strong></p>`;
-  }).join('');
-}
-
-async function loadQueue() {
-  setStatus('Loading queue...');
+async function reorderQueue(itemId, beforeId) {
+  setStatus('Updating order...');
 
   try {
-    const response = await window.adminAuth.adminFetch(`/api/admin/queue${buildQueueQuery()}`);
+    const response = await window.adminAuth.adminFetch('/api/admin/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ itemId, beforeId })
+    });
     const payload = await response.json();
 
     if (!response.ok) {
-      throw new Error(payload.error || 'Unable to load queue');
+      throw new Error(payload.error || 'Unable to reorder queue');
     }
 
-    renderQueue(payload.items || []);
-    setStatus(`Loaded ${payload.items?.length || 0} item(s).`);
+    setStatus('Queue order updated.');
+    await loadQueue();
   } catch (error) {
-    if (String(error.message || '').toLowerCase().includes('401')) {
-      window.adminAuth.clearAdminToken();
-      window.location.href = '/admin/login.html';
-      return;
-    }
-    setStatus(error.message || 'Unable to load queue.', true);
+    setStatus(error.message || 'Unable to reorder queue.', true);
   }
 }
 
-async function loadAnalytics() {
-  setAnalyticsStatus('Loading analytics...');
+async function runControl(action, successLabel) {
+  setControlStatus('Running control...');
 
   try {
-    const response = await window.adminAuth.adminFetch('/api/admin/analytics');
-    const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(payload.error || 'Unable to load analytics');
-    }
-
-    renderTotals(payload.totals || {});
-    renderAnalyticsList(adminTopArtists, payload.topRequestedArtists || [], 'artist');
-    renderAnalyticsList(adminTopTracks, payload.topRequestedTracks || [], 'trackName');
-    renderAnalyticsList(adminDanceMoments, payload.danceMoments || [], 'danceMoment');
-    renderAnalyticsList(adminVibeTags, payload.vibeTags || [], 'tag');
-    setAnalyticsStatus('Analytics updated.');
-  } catch (error) {
-    setAnalyticsStatus(error.message || 'Unable to load analytics.', true);
-  }
-}
-
-async function runBulkAction(action) {
-  setStatus('Running bulk action...');
-
-  try {
-    const response = await window.adminAuth.adminFetch('/api/admin/bulk', {
+    const response = await window.adminAuth.adminFetch('/api/admin/control', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action })
     });
-
     const payload = await response.json();
+
     if (!response.ok) {
-      throw new Error(payload.error || 'Bulk action failed');
+      throw new Error(payload.error || 'Control action failed');
     }
 
-    setStatus(`Bulk action updated ${payload.updatedCount} item(s).`);
-    await Promise.all([loadQueue(), loadAnalytics()]);
+    setControlStatus(`${successLabel} (${payload.updatedCount || 0} updated).`);
+    await loadQueue();
   } catch (error) {
-    setStatus(error.message || 'Bulk action failed.', true);
+    setControlStatus(error.message || 'Control action failed.', true);
   }
 }
 
-refreshAdminBtn.addEventListener('click', () => {
-  loadQueue();
-  loadAnalytics();
-});
+refreshAdminBtn.addEventListener('click', loadQueue);
 
-adminStatusFilter.addEventListener('change', loadQueue);
-adminConfidenceFilter.addEventListener('change', loadQueue);
-adminMomentFilter.addEventListener('change', loadQueue);
-adminSearchInput.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    loadQueue();
-  }
-});
-
-bulkApproveBtn.addEventListener('click', () => runBulkAction('approve_clean_high_priority'));
-bulkRejectBtn.addEventListener('click', () => runBulkAction('reject_explicit'));
+playNextBtn.addEventListener('click', () => runControl('play_next_approved', 'Played next queue song'));
+clearApprovedBtn.addEventListener('click', () => runControl('clear_approved', 'Queue cleared'));
+clearFlaggedBtn.addEventListener('click', () => runControl('clear_pending', 'Flagged queue cleared'));
+clearExplicitBtn.addEventListener('click', () => runControl('clear_denied', 'Explicit queue cleared'));
+renumberBtn.addEventListener('click', () => runControl('renumber_active', 'Queue order fixed'));
+clearAllBtn.addEventListener('click', () => runControl('clear_all', 'Entire queue cleared'));
 
 adminLogoutBtn.addEventListener('click', () => {
   window.adminAuth.clearAdminToken();
   window.location.href = '/admin/login.html';
 });
 
+enableListDrop(approvedQueueList);
+enableListDrop(flaggedQueueList);
+
 (async () => {
   const ok = await ensureAdminSession();
   if (!ok) return;
-  await Promise.all([loadQueue(), loadAnalytics()]);
+  await loadQueue();
+  setInterval(loadQueue, 8000);
 })();

@@ -24,9 +24,12 @@ const MODERATION_PRESETS = [
 
 const ROLE_WEIGHTS = { guest: 4, student: 8, staff: 14, organizer: 22, admin: 30 };
 const MOMENT_WEIGHTS = { anytime: 3, grand_entrance: 14, warmup: 6, peak_hour: 18, slow_dance: 8, last_dance: 20 };
+const MODERATION_TERMS = ['explicit', 'uncensored', 'dirty', 'parental advisory', 'violence', 'gun', 'drug', 'sex'];
+const REQUEST_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 
 const queue = [];
 let nextQueueId = 1;
+const rateLimitByIp = new Map();
 
 function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -35,6 +38,52 @@ function clampNumber(value, min, max) {
 function sanitizeText(value, maxLength = 500) {
   if (typeof value !== 'string') return '';
   return value.trim().slice(0, maxLength);
+}
+
+function parseIsoDateMs(value) {
+  const raw = sanitizeText(value, 50);
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getClientIpLocal(req) {
+  const cfIp = sanitizeText(req.get('CF-Connecting-IP') || '', 80);
+  if (cfIp) return cfIp;
+
+  const forwardedFor = sanitizeText(req.get('X-Forwarded-For') || '', 200);
+  if (forwardedFor) {
+    const first = sanitizeText((forwardedFor.split(',')[0] || ''), 80);
+    if (first) return first;
+  }
+
+  const direct = sanitizeText(req.ip || req.socket?.remoteAddress || '', 80);
+  return direct || 'unknown';
+}
+
+function checkAndConsumeRateLimitLocal(ipAddress) {
+  const key = sanitizeText(ipAddress || 'unknown', 80) || 'unknown';
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const lastIso = rateLimitByIp.get(key) || '';
+  const lastMs = parseIsoDateMs(lastIso);
+
+  if (lastMs !== null) {
+    const elapsed = nowMs - lastMs;
+    if (elapsed < REQUEST_LIMIT_WINDOW_MS) {
+      const waitMs = REQUEST_LIMIT_WINDOW_MS - elapsed;
+      const retryAfterSec = Math.max(1, Math.ceil(waitMs / 1000));
+      const nextAllowedAt = new Date(lastMs + REQUEST_LIMIT_WINDOW_MS).toISOString();
+      return { allowed: false, retryAfterSec, nextAllowedAt };
+    }
+  }
+
+  rateLimitByIp.set(key, nowIso);
+  return {
+    allowed: true,
+    retryAfterSec: Math.ceil(REQUEST_LIMIT_WINDOW_MS / 1000),
+    nextAllowedAt: new Date(nowMs + REQUEST_LIMIT_WINDOW_MS).toISOString()
+  };
 }
 
 function normalizeRole(role) {
@@ -69,6 +118,48 @@ function deriveContentConfidence(explicitFlag) {
   if (explicitFlag === true || explicitFlag === 1) return 'explicit';
   if (explicitFlag === false || explicitFlag === 0) return 'clean';
   return 'unknown';
+}
+
+function calculateModerationScore({ trackName, artists, contentConfidence }) {
+  const confidence = deriveContentConfidence(contentConfidence);
+  let score = confidence === 'clean' ? 92 : confidence === 'explicit' ? 8 : 62;
+  const haystack = `${sanitizeText(trackName, 200)} ${(artists || []).join(' ')}`.toLowerCase();
+
+  MODERATION_TERMS.forEach((term) => {
+    if (haystack.includes(term)) score -= 12;
+  });
+
+  return clampNumber(score, 0, 100);
+}
+
+function getAutoModerationDecision({ trackName, artists, contentConfidence }) {
+  const confidence = deriveContentConfidence(contentConfidence);
+  const moderationScore = calculateModerationScore({ trackName, artists, contentConfidence: confidence });
+
+  if (confidence === 'explicit' || moderationScore < 40) {
+    return {
+      status: 'rejected',
+      moderationReason: confidence === 'explicit' ? 'explicit_lyrics' : 'policy_violation',
+      reviewNote: `Auto-marked bad by moderation (${moderationScore}).`,
+      moderationScore
+    };
+  }
+
+  if (confidence === 'clean' && moderationScore >= 70) {
+    return {
+      status: 'approved',
+      moderationReason: '',
+      reviewNote: `Auto-approved to queue (${moderationScore}).`,
+      moderationScore
+    };
+  }
+
+  return {
+    status: 'pending',
+    moderationReason: '',
+    reviewNote: `Auto-flagged for review (${moderationScore}).`,
+    moderationScore
+  };
 }
 
 function normalizeDanceMoment(value) {
@@ -131,6 +222,132 @@ function chooseHigherPriorityDanceMoment(existingMoment, incomingMoment) {
 
 function mergeVibeTags(existingTags, incomingTags) {
   return normalizeVibeTags([...(existingTags || []), ...(incomingTags || [])]);
+}
+
+function getMaxActiveSetOrderLocal() {
+  return queue.reduce((maxOrder, entry) => {
+    if (entry.status === 'rejected') return maxOrder;
+    const parsed = parseSetOrder(entry.setOrder);
+    if (!parsed.valid || parsed.value === null) return maxOrder;
+    return Math.max(maxOrder, parsed.value);
+  }, 0);
+}
+
+function renumberActiveQueueLocal() {
+  const active = queue
+    .filter((entry) => entry.status !== 'rejected')
+    .sort((left, right) => {
+      const leftOrder = parseSetOrder(left.setOrder).value;
+      const rightOrder = parseSetOrder(right.setOrder).value;
+      const safeLeft = leftOrder === null ? Number.MAX_SAFE_INTEGER : leftOrder;
+      const safeRight = rightOrder === null ? Number.MAX_SAFE_INTEGER : rightOrder;
+      if (safeLeft !== safeRight) return safeLeft - safeRight;
+      return left.id - right.id;
+    });
+
+  active.forEach((entry, index) => {
+    entry.setOrder = index + 1;
+  });
+}
+
+function reorderActiveQueueLocal(itemId, beforeId) {
+  const active = queue
+    .filter((entry) => entry.status !== 'rejected')
+    .sort((left, right) => {
+      const leftOrder = parseSetOrder(left.setOrder).value;
+      const rightOrder = parseSetOrder(right.setOrder).value;
+      const safeLeft = leftOrder === null ? Number.MAX_SAFE_INTEGER : leftOrder;
+      const safeRight = rightOrder === null ? Number.MAX_SAFE_INTEGER : rightOrder;
+      if (safeLeft !== safeRight) return safeLeft - safeRight;
+      return left.id - right.id;
+    });
+
+  const ids = active.map((entry) => entry.id);
+  if (!ids.includes(itemId)) {
+    return { ok: false, error: 'Item is not in the active queue' };
+  }
+  if (beforeId !== null && !ids.includes(beforeId)) {
+    return { ok: false, error: 'Target position item not found in active queue' };
+  }
+
+  const nextIds = ids.filter((id) => id !== itemId);
+  if (beforeId === null) {
+    nextIds.push(itemId);
+  } else {
+    const insertIndex = nextIds.indexOf(beforeId);
+    nextIds.splice(insertIndex, 0, itemId);
+  }
+
+  nextIds.forEach((id, index) => {
+    const entry = queue.find((item) => item.id === id);
+    if (entry) {
+      entry.setOrder = index + 1;
+      entry.updatedAt = new Date().toISOString();
+    }
+  });
+
+  return { ok: true };
+}
+
+function runAdminControlActionLocal(action) {
+  const normalizedAction = sanitizeText(action, 64).toLowerCase();
+  const now = new Date().toISOString();
+
+  if (normalizedAction === 'play_next_approved') {
+    const nextApproved = getSortedQueue(queue)
+      .map(normalizeQueueItem)
+      .find((item) => item.status === 'approved');
+
+    if (!nextApproved) {
+      return { updatedCount: 0, action: normalizedAction };
+    }
+
+    const index = queue.findIndex((entry) => entry.id === nextApproved.id);
+    if (index >= 0) {
+      queue.splice(index, 1);
+    }
+    renumberActiveQueueLocal();
+    return { updatedCount: 1, action: normalizedAction, playedItemId: nextApproved.id };
+  }
+
+  if (normalizedAction === 'clear_all') {
+    const count = queue.length;
+    queue.splice(0, queue.length);
+    return { updatedCount: count, action: normalizedAction };
+  }
+
+  if (normalizedAction === 'clear_approved') {
+    const before = queue.length;
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      if (queue[index].status === 'approved') queue.splice(index, 1);
+    }
+    renumberActiveQueueLocal();
+    return { updatedCount: before - queue.length, action: normalizedAction };
+  }
+
+  if (normalizedAction === 'clear_pending') {
+    const before = queue.length;
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      if (queue[index].status === 'pending') queue.splice(index, 1);
+    }
+    renumberActiveQueueLocal();
+    return { updatedCount: before - queue.length, action: normalizedAction };
+  }
+
+  if (normalizedAction === 'clear_denied') {
+    const before = queue.length;
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      if (queue[index].status === 'rejected') queue.splice(index, 1);
+    }
+    return { updatedCount: before - queue.length, action: normalizedAction };
+  }
+
+  if (normalizedAction === 'renumber_active') {
+    renumberActiveQueueLocal();
+    return { updatedCount: 0, action: normalizedAction };
+  }
+
+  return { updatedCount: 0, action: normalizedAction, error: 'Unsupported control action' };
 }
 function calculatePriorityScore({ voteCount, requesterRoles, eventDate, contentConfidence, danceMoment, energyLevel }) {
   const safeVoteCount = Math.max(1, Number(voteCount) || 1);
@@ -318,8 +535,8 @@ function buildRequesterEntry({ requesterName, requesterRole, customMessage, dedi
 
 function getSortedQueue(items) {
   return [...items].sort((left, right) => {
-    const leftStatusRank = left.status === 'pending' ? 0 : left.status === 'approved' ? 1 : 2;
-    const rightStatusRank = right.status === 'pending' ? 0 : right.status === 'approved' ? 1 : 2;
+    const leftStatusRank = left.status === 'rejected' ? 1 : 0;
+    const rightStatusRank = right.status === 'rejected' ? 1 : 0;
 
     if (leftStatusRank !== rightStatusRank) return leftStatusRank - rightStatusRank;
     if (left.setOrder === null && right.setOrder !== null) return 1;
@@ -327,9 +544,7 @@ function getSortedQueue(items) {
     if (left.setOrder !== null && right.setOrder !== null && left.setOrder !== right.setOrder) {
       return left.setOrder - right.setOrder;
     }
-    if (right.priorityScore !== left.priorityScore) return right.priorityScore - left.priorityScore;
-    if (right.voteCount !== left.voteCount) return right.voteCount - left.voteCount;
-    return right.id - left.id;
+    return left.id - right.id;
   });
 }
 
@@ -467,8 +682,19 @@ app.post(['/api/public/request', '/api/queue'], (req, res) => {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
+  const clientIp = getClientIpLocal(req);
+  const limitResult = checkAndConsumeRateLimitLocal(clientIp);
+  if (!limitResult.allowed) {
+    res.set('Retry-After', String(limitResult.retryAfterSec));
+    return res.status(429).json({
+      error: 'You can request one song every 10 minutes from this device/network.',
+      retryAfterSec: limitResult.retryAfterSec,
+      nextAllowedAt: limitResult.nextAllowedAt
+    });
+  }
+
   const now = new Date().toISOString();
-  const existing = queue.find((item) => item.trackId === payload.trackId && item.status === 'pending');
+  const existing = queue.find((item) => item.trackId === payload.trackId && item.status !== 'rejected');
 
   if (existing) {
     existing.requesters.push(buildRequesterEntry({
@@ -489,6 +715,25 @@ app.post(['/api/public/request', '/api/queue'], (req, res) => {
 
     if (existing.explicit === null && payload.explicit !== null) existing.explicit = payload.explicit;
     existing.contentConfidence = deriveContentConfidence(existing.explicit);
+    const autoDecision = getAutoModerationDecision({
+      trackName: existing.trackName || payload.trackName,
+      artists: existing.artists || payload.artists,
+      contentConfidence: existing.contentConfidence
+    });
+
+    const previousStatus = normalizeStatus(existing.status) || 'pending';
+    if (previousStatus !== 'approved') {
+      existing.status = autoDecision.status;
+      existing.moderationReason = autoDecision.moderationReason;
+      existing.reviewNote = autoDecision.reviewNote;
+    }
+
+    if (existing.status === 'rejected') {
+      existing.setOrder = null;
+    } else if (existing.setOrder === null || existing.setOrder === undefined) {
+      existing.setOrder = getMaxActiveSetOrderLocal() + 1;
+    }
+
     existing.priorityScore = calculatePriorityScore({
       voteCount: existing.voteCount,
       requesterRoles: existing.requesters.map((requester) => requester.role),
@@ -498,8 +743,14 @@ app.post(['/api/public/request', '/api/queue'], (req, res) => {
       energyLevel: existing.energyLevel
     });
     existing.updatedAt = now;
+    renumberActiveQueueLocal();
 
-    return res.json({ ...normalizeQueueItem(existing), duplicateJoined: true });
+    return res.json({
+      ...normalizeQueueItem(existing),
+      duplicateJoined: true,
+      retryAfterSec: limitResult.retryAfterSec,
+      nextAllowedAt: limitResult.nextAllowedAt
+    });
   }
 
   const requesters = [buildRequesterEntry({
@@ -509,6 +760,12 @@ app.post(['/api/public/request', '/api/queue'], (req, res) => {
     dedicationMessage: payload.dedicationMessage,
     submittedAt: now
   })];
+
+  const autoDecision = getAutoModerationDecision({
+    trackName: payload.trackName,
+    artists: payload.artists,
+    contentConfidence: payload.contentConfidence
+  });
 
   const item = {
     id: nextQueueId++,
@@ -529,7 +786,7 @@ app.post(['/api/public/request', '/api/queue'], (req, res) => {
     danceMoment: payload.danceMoment,
     energyLevel: payload.energyLevel,
     vibeTags: payload.vibeTags,
-    moderationReason: '',
+    moderationReason: autoDecision.moderationReason,
     voteCount: 1,
     priorityScore: calculatePriorityScore({
       voteCount: 1,
@@ -539,16 +796,20 @@ app.post(['/api/public/request', '/api/queue'], (req, res) => {
       danceMoment: payload.danceMoment,
       energyLevel: payload.energyLevel
     }),
-    status: 'pending',
-    reviewNote: '',
+    status: autoDecision.status,
+    reviewNote: autoDecision.reviewNote,
     djNotes: '',
-    setOrder: null,
+    setOrder: autoDecision.status === 'rejected' ? null : getMaxActiveSetOrderLocal() + 1,
     submittedAt: now,
     updatedAt: null
   };
 
   queue.unshift(item);
-  return res.status(201).json(normalizeQueueItem(item));
+  return res.status(201).json({
+    ...normalizeQueueItem(item),
+    retryAfterSec: limitResult.retryAfterSec,
+    nextAllowedAt: limitResult.nextAllowedAt
+  });
 });
 app.get(['/api/admin/queue', '/api/queue'], (req, res) => {
   if (!isAdminAuthorized(req)) {
@@ -632,13 +893,23 @@ app.patch(['/api/admin/queue/:id', '/api/queue/:id'], (req, res) => {
   const parsedSetOrder = hasSetOrder ? parseSetOrder(req.body.setOrder) : parseSetOrder(item.setOrder);
   if (!parsedSetOrder.valid) return res.status(400).json({ error: 'Invalid set order value' });
 
+  let resolvedSetOrder = parsedSetOrder.value;
+  if (status === 'rejected') {
+    resolvedSetOrder = null;
+  } else if (item.status === 'rejected') {
+    resolvedSetOrder = resolvedSetOrder === null ? getMaxActiveSetOrderLocal() + 1 : resolvedSetOrder;
+  } else if (resolvedSetOrder === null) {
+    const existingSetOrder = parseSetOrder(item.setOrder);
+    resolvedSetOrder = existingSetOrder.valid ? existingSetOrder.value : getMaxActiveSetOrderLocal() + 1;
+  }
+
   item.status = status;
   item.reviewNote = hasReviewNote ? sanitizeText(req.body.reviewNote, 500) : item.reviewNote;
   item.moderationReason = resolvedModerationReason;
   item.danceMoment = hasDanceMoment ? normalizeDanceMoment(req.body.danceMoment) : item.danceMoment;
   item.energyLevel = hasEnergyLevel ? normalizeEnergyLevel(req.body.energyLevel) : item.energyLevel;
   item.djNotes = hasDjNotes ? sanitizeText(req.body.djNotes, 500) : item.djNotes;
-  item.setOrder = parsedSetOrder.value;
+  item.setOrder = resolvedSetOrder;
   item.priorityScore = calculatePriorityScore({
     voteCount: item.voteCount,
     requesterRoles: item.requesters.map((requester) => requester.role),
@@ -648,6 +919,7 @@ app.patch(['/api/admin/queue/:id', '/api/queue/:id'], (req, res) => {
     energyLevel: item.energyLevel
   });
   item.updatedAt = new Date().toISOString();
+  renumberActiveQueueLocal();
 
   return res.json(normalizeQueueItem(item));
 });
@@ -694,6 +966,43 @@ app.post('/api/admin/bulk', (req, res) => {
   }
 
   return res.status(400).json({ error: 'Unsupported bulk action' });
+});
+
+app.post('/api/admin/reorder', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const itemId = Number(req.body?.itemId);
+  const beforeId = req.body?.beforeId === null || req.body?.beforeId === undefined ? null : Number(req.body.beforeId);
+
+  if (!Number.isInteger(itemId) || itemId <= 0) {
+    return res.status(400).json({ error: 'Invalid item id' });
+  }
+  if (beforeId !== null && (!Number.isInteger(beforeId) || beforeId <= 0)) {
+    return res.status(400).json({ error: 'Invalid before id' });
+  }
+
+  const result = reorderActiveQueueLocal(itemId, beforeId);
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error || 'Unable to reorder queue' });
+  }
+
+  return res.json({ ok: true });
+});
+
+app.post('/api/admin/control', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const action = sanitizeText(req.body?.action, 64).toLowerCase();
+  if (!action) {
+    return res.status(400).json({ error: 'Control action is required' });
+  }
+
+  const result = runAdminControlActionLocal(action);
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  return res.json(result);
 });
 
 app.get(['/api/admin/analytics', '/api/analytics'], (req, res) => {
