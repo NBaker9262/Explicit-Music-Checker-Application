@@ -2,43 +2,62 @@ const searchInput = document.getElementById('searchInput');
 const searchBtn = document.getElementById('searchBtn');
 const searchStatus = document.getElementById('searchStatus');
 const searchResults = document.getElementById('searchResults');
+const searchSentinel = document.getElementById('searchSentinel');
+const albumViewBar = document.getElementById('albumViewBar');
+const albumBackBtn = document.getElementById('albumBackBtn');
+const albumViewTitle = document.getElementById('albumViewTitle');
+
 const selectedPanel = document.getElementById('selectedPanel');
 const selectedSong = document.getElementById('selectedSong');
 const requestForm = document.getElementById('requestForm');
 const submitBtn = requestForm.querySelector('button[type="submit"]');
+const requesterNameInput = document.getElementById('requesterName');
 const requestStatus = document.getElementById('requestStatus');
 const queueStatus = document.getElementById('queueStatus');
 const approvedList = document.getElementById('approvedList');
-const requesterNameInput = document.getElementById('requesterName');
+
 const rateLimitModal = document.getElementById('rateLimitModal');
 const rateLimitMessage = document.getElementById('rateLimitMessage');
 const closeRateLimitModalBtn = document.getElementById('closeRateLimitModalBtn');
 
 let selectedTrack = null;
 let cooldownTimer = null;
+let searchObserver = null;
+let searchPageToken = 0;
 
 const REQUEST_COOLDOWN_KEY = 'request_cooldown_until';
+const SEARCH_PAGE_SIZE = 24;
+
+const searchState = {
+  query: '',
+  type: 'all',
+  offset: 0,
+  hasMore: false,
+  loading: false,
+  totalLoaded: 0,
+  items: [],
+  view: 'search',
+  albumSnapshot: null
+};
 
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/\"/g, '&quot;')
+    .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
 
 function safeImageUrl(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
-
   try {
     const parsed = new URL(raw, window.location.origin);
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.href;
   } catch {
     return '';
   }
-
   return '';
 }
 
@@ -133,20 +152,16 @@ function startCooldownTimer() {
   }, 1000);
 }
 
-function resetToDefaultPage() {
-  selectedTrack = null;
-  renderSelectedTrack();
-  requestForm.reset();
-  searchInput.value = '';
-  searchResults.innerHTML = '';
-  setRequestStatus('');
-  setSearchStatus('');
-}
-
 function confidenceLabel(confidence) {
   if (confidence === 'clean') return 'Clean';
   if (confidence === 'explicit') return 'Explicit';
   return 'Unknown';
+}
+
+function normalizeResultKind(item) {
+  const rawKind = String(item?.kind || '').toLowerCase();
+  if (rawKind === 'album' || rawKind === 'artist') return rawKind;
+  return 'track';
 }
 
 function renderSelectedTrack() {
@@ -167,92 +182,294 @@ function renderSelectedTrack() {
 }
 
 function chooseTrack(track) {
+  // Freeze infinite paging while user is completing a request.
+  searchPageToken += 1;
+  searchState.hasMore = false;
+  searchState.loading = false;
   selectedTrack = track;
+  hideSuggestions();
   renderSelectedTrack();
   setRequestStatus('');
   requestForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function hideSuggestions() {
+  // Live suggestions removed. Keep no-op for clean call sites.
+}
+
+function showAlbumViewBar(title) {
+  if (!albumViewBar || !albumViewTitle) return;
+  albumViewTitle.textContent = title;
+  albumViewBar.hidden = false;
+}
+
+function hideAlbumViewBar() {
+  if (!albumViewBar || !albumViewTitle) return;
+  albumViewTitle.textContent = '';
+  albumViewBar.hidden = true;
+}
+
+function buildSpotifySearchUrl(query, { type = 'all', limit, offset }) {
+  const params = new URLSearchParams();
+  params.set('q', query);
+  params.set('type', type);
+  params.set('limit', String(limit));
+  params.set('offset', String(offset));
+  return window.appApi.buildApiUrl(`/api/public/spotify/search?${params.toString()}`);
 }
 
 function searchByArtist(artistName) {
   const artist = String(artistName || '').trim();
   if (!artist) return;
   searchInput.value = artist;
-  searchSongs();
+  startSearch({ type: 'all' });
 }
 
-function renderSearchResults(items) {
-  searchResults.innerHTML = '';
+function createArtistButtons(artists) {
+  const wrapper = document.createElement('p');
+  wrapper.className = 'song-artists';
 
+  (artists || []).forEach((artist, index) => {
+    if (index > 0) wrapper.appendChild(document.createTextNode(', '));
+    const button = document.createElement('button');
+    button.className = 'artist-link';
+    button.type = 'button';
+    button.textContent = String(artist || '');
+    button.addEventListener('click', () => searchByArtist(artist));
+    wrapper.appendChild(button);
+  });
+
+  return wrapper;
+}
+
+function createResultCard(item) {
+  const kind = normalizeResultKind(item);
+  const card = document.createElement('article');
+  card.className = 'song-card';
+
+  const coverButton = document.createElement('button');
+  coverButton.className = 'song-card-select';
+  coverButton.type = 'button';
+  coverButton.innerHTML = `<img src="${escapeHtml(safeImageUrl(item.albumImage))}" alt="Cover art for ${escapeHtml(item.name)}">`;
+
+  const body = document.createElement('div');
+  body.className = 'song-card-body';
+
+  const titleButton = document.createElement('button');
+  titleButton.className = 'song-link';
+  titleButton.type = 'button';
+  titleButton.textContent = String(item.name || '');
+
+  const kindBadge = document.createElement('p');
+  kindBadge.className = 'song-kind';
+  kindBadge.textContent = kind === 'album' ? 'Album' : kind === 'artist' ? 'Artist' : 'Song';
+
+  if (kind === 'track') {
+    coverButton.addEventListener('click', () => chooseTrack(item));
+    titleButton.addEventListener('click', () => chooseTrack(item));
+  } else if (kind === 'album') {
+    coverButton.addEventListener('click', () => openAlbum(item));
+    titleButton.addEventListener('click', () => openAlbum(item));
+  } else {
+    coverButton.addEventListener('click', () => searchByArtist(item.name));
+    titleButton.addEventListener('click', () => searchByArtist(item.name));
+  }
+
+  body.appendChild(titleButton);
+  body.appendChild(createArtistButtons(item.artists || []));
+  body.appendChild(kindBadge);
+
+  card.appendChild(coverButton);
+  card.appendChild(body);
+  return card;
+}
+
+function renderResults(items) {
+  searchResults.innerHTML = '';
   if (!items.length) {
-    searchResults.innerHTML = '<p class="empty-state">No songs found.</p>';
+    searchResults.innerHTML = '<p class="empty-state">No songs, albums, or artists found.</p>';
     return;
   }
 
-  items.forEach((track) => {
-    const card = document.createElement('article');
-    card.className = 'song-card';
-
-    const coverBtn = document.createElement('button');
-    coverBtn.className = 'song-card-select';
-    coverBtn.type = 'button';
-    coverBtn.setAttribute('aria-label', `Select ${track.name}`);
-    coverBtn.innerHTML = `<img src="${escapeHtml(safeImageUrl(track.albumImage))}" alt="Album art for ${escapeHtml(track.name)}">`;
-    coverBtn.addEventListener('click', () => chooseTrack(track));
-
-    const body = document.createElement('div');
-    body.className = 'song-card-body';
-
-    const titleBtn = document.createElement('button');
-    titleBtn.className = 'song-link';
-    titleBtn.type = 'button';
-    titleBtn.textContent = String(track.name || '');
-    titleBtn.addEventListener('click', () => chooseTrack(track));
-
-    const artistRow = document.createElement('p');
-    artistRow.className = 'song-artists';
-    (track.artists || []).forEach((artist, index) => {
-      if (index > 0) artistRow.appendChild(document.createTextNode(', '));
-      const artistBtn = document.createElement('button');
-      artistBtn.className = 'artist-link';
-      artistBtn.type = 'button';
-      artistBtn.textContent = String(artist || '');
-      artistBtn.addEventListener('click', () => searchByArtist(artist));
-      artistRow.appendChild(artistBtn);
-    });
-
-    body.appendChild(titleBtn);
-    body.appendChild(artistRow);
-
-    card.appendChild(coverBtn);
-    card.appendChild(body);
-
-    searchResults.appendChild(card);
+  items.forEach((item) => {
+    searchResults.appendChild(createResultCard(item));
   });
 }
 
-async function searchSongs() {
-  const query = searchInput.value.trim();
-  if (!query) {
-    setSearchStatus('Enter a song or artist first.', true);
-    return;
-  }
+async function loadSearchPage({ append = false } = {}) {
+  if (searchState.loading) return;
+  if (selectedTrack) return;
+  if (searchState.view !== 'search') return;
+  if (!append && !searchState.query) return;
+  if (append && !searchState.hasMore) return;
 
-  setSearchStatus('Searching...');
-  searchResults.innerHTML = '';
+  searchState.loading = true;
+  setSearchStatus(append ? 'Loading more...' : 'Searching...');
+  const requestToken = ++searchPageToken;
 
   try {
-    const response = await fetch(window.appApi.buildApiUrl(`/api/public/spotify/search?q=${encodeURIComponent(query)}`));
+    const response = await fetch(buildSpotifySearchUrl(searchState.query, {
+      type: searchState.type,
+      limit: SEARCH_PAGE_SIZE,
+      offset: searchState.offset
+    }));
     const payload = await response.json();
 
+    if (requestToken !== searchPageToken) return;
     if (!response.ok) {
       throw new Error(payload.error || 'Search failed');
     }
 
-    renderSearchResults(payload.items || []);
-    setSearchStatus(`Found ${payload.items?.length || 0} result(s).`);
+    const items = payload.items || [];
+    if (!append) searchState.items = [];
+    searchState.items = [...searchState.items, ...items];
+    searchState.totalLoaded = searchState.items.length;
+    searchState.offset += SEARCH_PAGE_SIZE;
+    searchState.hasMore = Boolean(payload.page?.hasMore) && items.length > 0;
+
+    renderResults(searchState.items);
+
+    if (!searchState.totalLoaded) {
+      setSearchStatus('No results.');
+      return;
+    }
+
+    setSearchStatus(searchState.hasMore
+      ? `${searchState.totalLoaded} result(s). Scroll for more.`
+      : `${searchState.totalLoaded} result(s).`);
   } catch (error) {
+    if (!append) renderResults([]);
+    searchState.hasMore = false;
     setSearchStatus(error.message || 'Search failed.', true);
+  } finally {
+    searchState.loading = false;
   }
+}
+
+function startSearch({ type = 'all' } = {}) {
+  const query = searchInput.value.trim();
+  if (!query) {
+    setSearchStatus('Enter a song, album, or artist first.', true);
+    return;
+  }
+
+  hideSuggestions();
+  hideAlbumViewBar();
+
+  searchState.query = query;
+  searchState.type = type;
+  searchState.offset = 0;
+  searchState.totalLoaded = 0;
+  searchState.items = [];
+  searchState.hasMore = true;
+  searchState.loading = false;
+  searchState.view = 'search';
+  searchState.albumSnapshot = null;
+
+  loadSearchPage({ append: false });
+}
+
+async function openAlbum(albumItem) {
+  const albumId = String(albumItem?.id || '').trim();
+  if (!albumId) return;
+
+  setSearchStatus('Loading album...');
+  hideSuggestions();
+
+  const snapshot = {
+    query: searchState.query,
+    type: searchState.type,
+    offset: searchState.offset,
+    hasMore: searchState.hasMore,
+    totalLoaded: searchState.totalLoaded,
+    items: [...searchState.items]
+  };
+
+  try {
+    const response = await fetch(window.appApi.buildApiUrl(`/api/public/spotify/album/${encodeURIComponent(albumId)}/tracks`));
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Unable to load album tracks');
+
+    searchState.view = 'album';
+    searchState.albumSnapshot = snapshot;
+    searchState.items = payload.items || [];
+    searchState.hasMore = false;
+    searchState.loading = false;
+
+    renderResults(searchState.items);
+
+    const albumName = payload.album?.name || albumItem.name || 'Album';
+    showAlbumViewBar(albumName);
+    setSearchStatus(`${searchState.items.length} track(s) in ${albumName}.`);
+  } catch (error) {
+    setSearchStatus(error.message || 'Unable to load album tracks.', true);
+  }
+}
+
+function backFromAlbumView() {
+  const snapshot = searchState.albumSnapshot;
+  searchState.view = 'search';
+  hideAlbumViewBar();
+
+  if (!snapshot) {
+    startSearch({ type: 'all' });
+    return;
+  }
+
+  searchState.query = snapshot.query;
+  searchState.type = snapshot.type;
+  searchState.offset = snapshot.offset;
+  searchState.hasMore = snapshot.hasMore;
+  searchState.totalLoaded = snapshot.totalLoaded;
+  searchState.items = [...snapshot.items];
+  searchState.albumSnapshot = null;
+
+  renderResults(searchState.items);
+  setSearchStatus(searchState.hasMore
+    ? `${searchState.totalLoaded} result(s). Scroll for more.`
+    : `${searchState.totalLoaded} result(s).`);
+}
+
+function initSearchObserver() {
+  if (!searchSentinel) return;
+
+  if (searchObserver) {
+    searchObserver.disconnect();
+    searchObserver = null;
+  }
+
+  searchObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      if (selectedTrack) return;
+      if (searchState.view !== 'search' || !searchState.query || !searchState.hasMore || searchState.loading) return;
+      loadSearchPage({ append: true });
+    });
+  }, { rootMargin: '280px 0px' });
+
+  searchObserver.observe(searchSentinel);
+}
+
+function resetToDefaultPage() {
+  selectedTrack = null;
+  renderSelectedTrack();
+  requestForm.reset();
+  searchInput.value = '';
+  searchResults.innerHTML = '';
+  hideSuggestions();
+  hideAlbumViewBar();
+  setRequestStatus('');
+  setSearchStatus('');
+
+  searchState.query = '';
+  searchState.type = 'all';
+  searchState.offset = 0;
+  searchState.hasMore = false;
+  searchState.loading = false;
+  searchState.totalLoaded = 0;
+  searchState.items = [];
+  searchState.view = 'search';
+  searchState.albumSnapshot = null;
 }
 
 async function submitRequest(event) {
@@ -297,16 +514,13 @@ async function submitRequest(event) {
     if (response.status === 429) {
       if (payload.nextAllowedAt) setCooldown(payload.nextAllowedAt);
       const seconds = Math.max(1, Number(payload.retryAfterSec) || 0);
-      const delayText = formatRemaining(seconds);
-      const message = `Request delay active. Please wait ${delayText} before submitting another song.`;
+      const message = `Request delay active. Please wait ${formatRemaining(seconds)} before submitting another song.`;
       setRequestStatus(message, true);
       showRateLimitModal(message);
       return;
     }
 
-    if (!response.ok) {
-      throw new Error(payload.error || 'Request failed');
-    }
+    if (!response.ok) throw new Error(payload.error || 'Request failed');
 
     if (payload.nextAllowedAt) setCooldown(payload.nextAllowedAt);
     resetToDefaultPage();
@@ -338,7 +552,6 @@ function renderLiveQueue(items) {
         </div>
       </div>
     `;
-
     approvedList.appendChild(card);
   });
 }
@@ -347,10 +560,7 @@ async function loadLiveQueue() {
   try {
     const response = await fetch(window.appApi.buildApiUrl('/api/public/queue?limit=30'));
     const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(payload.error || 'Unable to load queue');
-    }
+    if (!response.ok) throw new Error(payload.error || 'Unable to load queue');
 
     renderLiveQueue(payload.items || []);
     setQueueStatus('Live queue is on.');
@@ -359,20 +569,23 @@ async function loadLiveQueue() {
   }
 }
 
-searchBtn.addEventListener('click', searchSongs);
+searchBtn.addEventListener('click', () => startSearch({ type: 'all' }));
 searchInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
-    searchSongs();
+    startSearch({ type: 'all' });
   }
 });
 
+albumBackBtn?.addEventListener('click', backFromAlbumView);
 requestForm.addEventListener('submit', submitRequest);
 closeRateLimitModalBtn?.addEventListener('click', hideRateLimitModal);
 rateLimitModal?.addEventListener('click', (event) => {
   if (event.target === rateLimitModal) hideRateLimitModal();
 });
 
+initSearchObserver();
 loadLiveQueue();
 startCooldownTimer();
 setInterval(loadLiveQueue, 8000);
+

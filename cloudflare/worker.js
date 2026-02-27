@@ -57,6 +57,16 @@ const MODERATION_PRESETS = [
 const ROLE_WEIGHTS = { guest: 4, student: 8, staff: 14, organizer: 22, admin: 30 };
 const MOMENT_WEIGHTS = { anytime: 3, grand_entrance: 14, warmup: 6, peak_hour: 18, slow_dance: 8, last_dance: 20 };
 const MODERATION_TERMS = ['explicit', 'uncensored', 'dirty', 'parental advisory', 'violence', 'gun', 'drug', 'sex'];
+const LYRICS_OVH_BASE_URL = 'https://api.lyrics.ovh/v1';
+const LRCLIB_BASE_URL = 'https://lrclib.net/api/get';
+const OPENAI_MODERATIONS_URL = 'https://api.openai.com/v1/moderations';
+const LYRICS_MODERATION_HINT_TERMS = {
+  suggestive: ['sex', 'sexy', 'kiss', 'touch', 'bed', 'naked', 'body', 'freak', 'hook up', 'make love', 'twerk'],
+  alcohol: ['alcohol', 'drink', 'drunk', 'whiskey', 'vodka', 'tequila', 'beer', 'wine', 'shots', 'bar', 'bottle', 'liquor'],
+  drugs: ['drug', 'drugs', 'weed', 'marijuana', 'cocaine', 'crack', 'meth', 'heroin', 'xanax', 'molly', 'ecstasy', 'lean', 'pills'],
+  violence: ['gun', 'guns', 'shoot', 'murder', 'kill', 'blood', 'knife', 'fight', 'dead', 'die']
+};
+const LOCAL_PROFANITY_TERMS = ['fuck', 'fucking', 'shit', 'bitch', 'motherfucker', 'asshole', 'dick', 'pussy', 'nigga', 'nigger', 'cunt'];
 const REQUEST_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 let rateLimitSchemaReady = false;
 
@@ -177,33 +187,391 @@ function calculateModerationScore({ trackName, artists, contentConfidence }) {
   return clampNumber(score, 0, 100);
 }
 
-function getAutoModerationDecision({ trackName, artists, contentConfidence }) {
-  const confidence = deriveContentConfidence(contentConfidence);
-  const moderationScore = calculateModerationScore({ trackName, artists, contentConfidence: confidence });
+function splitTextByLength(text, maxChunkLength = 240) {
+  const safeText = sanitizeText(text, 30000);
+  if (!safeText) return [];
+  const chunks = [];
+  let cursor = 0;
+  while (cursor < safeText.length && chunks.length < 8) {
+    chunks.push(safeText.slice(cursor, cursor + maxChunkLength));
+    cursor += maxChunkLength;
+  }
+  return chunks;
+}
 
-  if (confidence === 'explicit' || moderationScore < 40) {
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function countKeywordHits(text, keywords) {
+  const haystack = sanitizeText(text, 30000).toLowerCase();
+  if (!haystack) return 0;
+
+  let count = 0;
+  (keywords || []).forEach((keyword) => {
+    const token = sanitizeText(keyword, 60).toLowerCase();
+    if (!token) return;
+
+    if (token.includes(' ')) {
+      const occurrences = haystack.split(token).length - 1;
+      count += Math.max(0, occurrences);
+      return;
+    }
+
+    const regex = new RegExp(`(^|[^a-z0-9])${escapeRegex(token)}([^a-z0-9]|$)`, 'gi');
+    const matches = haystack.match(regex);
+    count += matches ? matches.length : 0;
+  });
+
+  return count;
+}
+
+function normalizeArtistForLyrics(artist) {
+  return sanitizeText(String(artist || '').split(',')[0].split('&')[0].split(' feat')[0], 120);
+}
+
+function normalizeTitleForLyrics(title) {
+  const safeTitle = sanitizeText(title, 200);
+  return sanitizeText(
+    safeTitle
+      .replace(/\(.*?\)/g, '')
+      .replace(/\[.*?\]/g, '')
+      .replace(/-+\s*(remaster|radio edit|clean|explicit).*/i, '')
+      .trim(),
+    200
+  );
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = 4000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) return { ok: false, status: response.status, data: null };
+    const data = await response.json();
+    return { ok: true, status: response.status, data };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function postJsonWithTimeout(url, payload, headers = {}, timeoutMs = 4000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    if (!response.ok) return { ok: false, status: response.status, data: null };
+    const data = await response.json();
+    return { ok: true, status: response.status, data };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchLyricsFromLyricsOvh(artistName, trackName) {
+  const artist = normalizeArtistForLyrics(artistName);
+  const title = normalizeTitleForLyrics(trackName);
+  if (!artist || !title) return '';
+
+  const url = `${LYRICS_OVH_BASE_URL}/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`;
+  const result = await fetchJsonWithTimeout(url, 3500);
+  if (!result.ok) return '';
+
+  const lyrics = sanitizeText(result.data?.lyrics || '', 30000);
+  return lyrics;
+}
+
+async function fetchLyricsFromLrcLib(artistName, trackName) {
+  const artist = normalizeArtistForLyrics(artistName);
+  const title = normalizeTitleForLyrics(trackName);
+  if (!artist || !title) return '';
+
+  const params = new URLSearchParams();
+  params.set('artist_name', artist);
+  params.set('track_name', title);
+
+  const url = `${LRCLIB_BASE_URL}?${params.toString()}`;
+  const result = await fetchJsonWithTimeout(url, 3500);
+  if (!result.ok) return '';
+
+  const lyrics = sanitizeText(result.data?.plainLyrics || result.data?.syncedLyrics || '', 30000);
+  return lyrics;
+}
+
+async function fetchLyricsForModeration(trackName, artists) {
+  const artistCandidates = [];
+  (artists || []).forEach((artist) => {
+    const normalized = normalizeArtistForLyrics(artist);
+    if (!normalized || artistCandidates.includes(normalized)) return;
+    artistCandidates.push(normalized);
+  });
+  if (!artistCandidates.length) return { lyrics: '', provider: '' };
+
+  const primaryArtist = artistCandidates[0];
+  const titleCandidates = [];
+  const rawTitle = sanitizeText(trackName, 200);
+  const normalizedTitle = normalizeTitleForLyrics(rawTitle);
+  if (rawTitle) titleCandidates.push(rawTitle);
+  if (normalizedTitle && normalizedTitle !== rawTitle) titleCandidates.push(normalizedTitle);
+
+  for (const title of titleCandidates.slice(0, 2)) {
+    const lyricsFromOvh = await fetchLyricsFromLyricsOvh(primaryArtist, title);
+    if (lyricsFromOvh) return { lyrics: lyricsFromOvh, provider: 'lyrics.ovh' };
+
+    const lyricsFromLrcLib = await fetchLyricsFromLrcLib(primaryArtist, title);
+    if (lyricsFromLrcLib) return { lyrics: lyricsFromLrcLib, provider: 'lrclib' };
+  }
+
+  return { lyrics: '', provider: '' };
+}
+
+function normalizeOpenAiCategoryMap(rawCategories) {
+  const map = {};
+  if (!rawCategories || typeof rawCategories !== 'object') return map;
+
+  Object.entries(rawCategories).forEach(([key, value]) => {
+    if (value === true) map[sanitizeText(key, 64)] = true;
+  });
+
+  return map;
+}
+
+function hasOpenAiCategory(categoryMap, categoryPrefix) {
+  const safePrefix = sanitizeText(categoryPrefix, 64).toLowerCase();
+  if (!safePrefix) return false;
+
+  return Object.keys(categoryMap || {}).some((key) => {
+    const normalized = sanitizeText(key, 64).toLowerCase();
+    return normalized === safePrefix || normalized.startsWith(`${safePrefix}/`);
+  });
+}
+
+function listOpenAiCategories(categoryMap) {
+  return Object.keys(categoryMap || {}).map((key) => sanitizeText(key, 64)).filter(Boolean).sort();
+}
+
+async function checkContentWithOpenAiModeration(lyricsText, env) {
+  const apiKey = sanitizeText(env?.OPENAI_API_KEY || '', 300);
+  if (!apiKey) {
+    return { available: false, flagged: false, categories: {}, failed: false };
+  }
+
+  const chunks = splitTextByLength(lyricsText, 1200).slice(0, 2);
+  if (!chunks.length) {
+    return { available: true, flagged: false, categories: {}, failed: false };
+  }
+
+  let anyFlagged = false;
+  let anySuccess = false;
+  const mergedCategories = {};
+
+  for (const chunk of chunks) {
+    const result = await postJsonWithTimeout(
+      OPENAI_MODERATIONS_URL,
+      { model: 'omni-moderation-latest', input: chunk },
+      { Authorization: `Bearer ${apiKey}` },
+      3200
+    );
+    if (!result.ok) continue;
+
+    const moderation = result.data?.results?.[0];
+    if (!moderation || typeof moderation !== 'object') continue;
+
+    anySuccess = true;
+    if (moderation.flagged === true) anyFlagged = true;
+
+    const chunkCategories = normalizeOpenAiCategoryMap(moderation.categories);
+    Object.keys(chunkCategories).forEach((key) => {
+      mergedCategories[key] = true;
+    });
+  }
+
+  return {
+    available: true,
+    flagged: anyFlagged,
+    categories: mergedCategories,
+    failed: !anySuccess
+  };
+}
+
+function checkProfanityLocally(lyricsText) {
+  return LOCAL_PROFANITY_TERMS.some((term) => countKeywordHits(lyricsText, [term]) > 0);
+}
+
+async function analyzeLyricsModeration(trackName, artists, env) {
+  const lyricsResult = await fetchLyricsForModeration(trackName, artists);
+  const lyrics = lyricsResult.lyrics;
+
+  if (!lyrics) {
     return {
-      status: 'rejected',
-      moderationReason: confidence === 'explicit' ? 'explicit_lyrics' : 'policy_violation',
-      reviewNote: `Auto-marked bad by moderation (${moderationScore}).`,
-      moderationScore
+      foundLyrics: false,
+      provider: '',
+      profanityDetected: false,
+      openAiAvailable: Boolean(sanitizeText(env?.OPENAI_API_KEY || '', 300)),
+      openAiFailed: false,
+      openAiFlagged: false,
+      openAiCategories: [],
+      suggestiveHits: 0,
+      alcoholHits: 0,
+      drugHits: 0,
+      violenceHits: 0,
+      riskScore: 0,
+      riskLevel: 'unknown'
     };
   }
 
-  if (confidence === 'clean' && moderationScore >= 70) {
+  const suggestiveHits = countKeywordHits(lyrics, LYRICS_MODERATION_HINT_TERMS.suggestive);
+  const alcoholHits = countKeywordHits(lyrics, LYRICS_MODERATION_HINT_TERMS.alcohol);
+  const drugHits = countKeywordHits(lyrics, LYRICS_MODERATION_HINT_TERMS.drugs);
+  const violenceHits = countKeywordHits(lyrics, LYRICS_MODERATION_HINT_TERMS.violence);
+
+  const localProfanityDetected = checkProfanityLocally(lyrics);
+  const openAiResult = await checkContentWithOpenAiModeration(lyrics, env);
+  const openAiCategories = listOpenAiCategories(openAiResult.categories);
+  const openAiSexual = hasOpenAiCategory(openAiResult.categories, 'sexual');
+  const openAiViolence = hasOpenAiCategory(openAiResult.categories, 'violence');
+  const openAiHate = hasOpenAiCategory(openAiResult.categories, 'hate');
+  const openAiIllicit = hasOpenAiCategory(openAiResult.categories, 'illicit');
+  const openAiHarassment = hasOpenAiCategory(openAiResult.categories, 'harassment');
+
+  const profanityDetected = localProfanityDetected;
+  const openAiScore = clampNumber(
+    (openAiResult.flagged ? 18 : 0)
+    + (openAiSexual ? 16 : 0)
+    + (openAiViolence ? 18 : 0)
+    + (openAiHate ? 22 : 0)
+    + (openAiIllicit ? 14 : 0)
+    + (openAiHarassment ? 10 : 0),
+    0,
+    65
+  );
+
+  const themeScore = Math.min(45, (suggestiveHits * 4) + (alcoholHits * 3) + (drugHits * 7) + (violenceHits * 6));
+  const riskScore = clampNumber((profanityDetected ? 45 : 0) + themeScore + openAiScore, 0, 100);
+  const riskLevel = riskScore >= 70 ? 'high' : riskScore >= 35 ? 'medium' : 'low';
+
+  return {
+    foundLyrics: true,
+    provider: lyricsResult.provider,
+    profanityDetected,
+    openAiAvailable: openAiResult.available,
+    openAiFailed: openAiResult.failed,
+    openAiFlagged: openAiResult.flagged,
+    openAiCategories,
+    suggestiveHits,
+    alcoholHits,
+    drugHits,
+    violenceHits,
+    riskScore,
+    riskLevel
+  };
+}
+
+function chooseModerationReasonFromLyrics(lyricsAnalysis) {
+  if (!lyricsAnalysis?.foundLyrics) return '';
+  const openAiCategories = lyricsAnalysis.openAiCategories || [];
+  if (openAiCategories.some((entry) => String(entry).startsWith('hate'))) return 'hate_speech';
+  if (openAiCategories.some((entry) => String(entry).startsWith('violence'))) return 'violence';
+  if (openAiCategories.some((entry) => String(entry).startsWith('sexual'))) return 'sexual_content';
+  if (openAiCategories.some((entry) => String(entry).startsWith('illicit'))) return 'policy_violation';
+  if (lyricsAnalysis.profanityDetected) return 'explicit_lyrics';
+  if (lyricsAnalysis.drugHits > 0 || lyricsAnalysis.alcoholHits > 0) return 'policy_violation';
+  if (lyricsAnalysis.violenceHits > 0) return 'violence';
+  if (lyricsAnalysis.suggestiveHits > 0) return 'sexual_content';
+  return '';
+}
+
+function buildLyricsReviewNote(baseScore, combinedScore, lyricsAnalysis, fallbackMessage) {
+  if (!lyricsAnalysis?.foundLyrics) return fallbackMessage;
+
+  const parts = [];
+  parts.push(`Lyrics provider: ${lyricsAnalysis.provider || 'unknown'}`);
+  parts.push(`risk=${lyricsAnalysis.riskLevel}/${lyricsAnalysis.riskScore}`);
+  if (lyricsAnalysis.openAiAvailable) {
+    parts.push(lyricsAnalysis.openAiFailed ? 'openai=failed' : 'openai=ok');
+  } else {
+    parts.push('openai=disabled');
+  }
+  if ((lyricsAnalysis.openAiCategories || []).length) {
+    parts.push(`openai_categories:${lyricsAnalysis.openAiCategories.join(',')}`);
+  }
+  if (lyricsAnalysis.openAiFlagged) parts.push('openai_flagged');
+  if (lyricsAnalysis.profanityDetected) parts.push('profanity detected');
+  if (lyricsAnalysis.suggestiveHits > 0) parts.push(`suggestive:${lyricsAnalysis.suggestiveHits}`);
+  if (lyricsAnalysis.alcoholHits > 0) parts.push(`alcohol:${lyricsAnalysis.alcoholHits}`);
+  if (lyricsAnalysis.drugHits > 0) parts.push(`drugs:${lyricsAnalysis.drugHits}`);
+  if (lyricsAnalysis.violenceHits > 0) parts.push(`violence:${lyricsAnalysis.violenceHits}`);
+  parts.push(`score ${baseScore} -> ${combinedScore}`);
+  return parts.join(' | ');
+}
+
+async function getAutoModerationDecision({ trackName, artists, contentConfidence, env }) {
+  const confidence = deriveContentConfidence(contentConfidence);
+  const baseModerationScore = calculateModerationScore({ trackName, artists, contentConfidence: confidence });
+  const lyricsAnalysis = env?.DISABLE_LYRICS_MODERATION === '1'
+    ? {
+      foundLyrics: false,
+      provider: '',
+      profanityDetected: false,
+      openAiAvailable: false,
+      openAiFailed: false,
+      openAiFlagged: false,
+      openAiCategories: [],
+      suggestiveHits: 0,
+      alcoholHits: 0,
+      drugHits: 0,
+      violenceHits: 0,
+      riskScore: 0,
+      riskLevel: 'unknown'
+    }
+    : await analyzeLyricsModeration(trackName, artists, env);
+  const combinedScore = clampNumber(baseModerationScore - Math.round((lyricsAnalysis.riskScore || 0) * 0.65), 0, 100);
+  const preferredReason = chooseModerationReasonFromLyrics(lyricsAnalysis) || (confidence === 'explicit' ? 'explicit_lyrics' : 'policy_violation');
+
+  if (confidence === 'explicit' || lyricsAnalysis.profanityDetected || lyricsAnalysis.riskLevel === 'high' || combinedScore < 35) {
+    return {
+      status: 'rejected',
+      moderationReason: preferredReason,
+      reviewNote: buildLyricsReviewNote(baseModerationScore, combinedScore, lyricsAnalysis, `Auto-marked explicit by moderation (${combinedScore}).`),
+      moderationScore: combinedScore
+    };
+  }
+
+  if (lyricsAnalysis.riskLevel === 'medium') {
+    return {
+      status: 'pending',
+      moderationReason: '',
+      reviewNote: buildLyricsReviewNote(baseModerationScore, combinedScore, lyricsAnalysis, `Auto-flagged for review (${combinedScore}).`),
+      moderationScore: combinedScore
+    };
+  }
+
+  if (confidence === 'clean' && combinedScore >= 70) {
     return {
       status: 'approved',
       moderationReason: '',
-      reviewNote: `Auto-approved to queue (${moderationScore}).`,
-      moderationScore
+      reviewNote: buildLyricsReviewNote(baseModerationScore, combinedScore, lyricsAnalysis, `Auto-approved to queue (${combinedScore}).`),
+      moderationScore: combinedScore
     };
   }
 
   return {
     status: 'pending',
     moderationReason: '',
-    reviewNote: `Auto-flagged for review (${moderationScore}).`,
-    moderationScore
+    reviewNote: buildLyricsReviewNote(baseModerationScore, combinedScore, lyricsAnalysis, `Auto-flagged for review (${combinedScore}).`),
+    moderationScore: combinedScore
   };
 }
 
@@ -345,6 +713,12 @@ function parseSetOrder(value) {
   const numeric = Number(value);
   if (!Number.isInteger(numeric) || numeric < 1 || numeric > 9999) return { valid: false, value: null };
   return { valid: true, value: numeric };
+}
+
+function normalizeSpotifySearchType(rawType) {
+  const value = sanitizeText(rawType, 20).toLowerCase();
+  if (value === 'track' || value === 'album' || value === 'artist') return value;
+  return 'all';
 }
 
 function normalizeRequestRow(row) {
@@ -813,10 +1187,11 @@ async function handleCreateRequest(request, env) {
     const mergedEnergyLevel = Math.max(normalizeEnergyLevel(existing.energy_level), payload.energyLevel);
     const mergedVibeTags = mergeVibeTags(parseVibeTags(existing.vibe_tags), payload.vibeTags);
     const mergedArtists = parseArtists(existing.artists);
-    const autoDecision = getAutoModerationDecision({
+    const autoDecision = await getAutoModerationDecision({
       trackName: existing.track_name || payload.trackName,
       artists: mergedArtists.length ? mergedArtists : payload.artists,
-      contentConfidence: mergedConfidence
+      contentConfidence: mergedConfidence,
+      env
     });
 
     const previousStatus = normalizeStatus(existing.status) || 'pending';
@@ -901,10 +1276,11 @@ async function handleCreateRequest(request, env) {
     energyLevel: payload.energyLevel
   });
 
-  const autoDecision = getAutoModerationDecision({
+  const autoDecision = await getAutoModerationDecision({
     trackName: payload.trackName,
     artists: payload.artists,
-    contentConfidence: payload.contentConfidence
+    contentConfidence: payload.contentConfidence,
+    env
   });
   const nextSetOrder = autoDecision.status === 'rejected' ? null : (await getMaxActiveSetOrder(env)) + 1;
 
@@ -1210,13 +1586,9 @@ async function handleGetAdminAnalytics(env) {
   return json(buildAnalyticsFromRows(result.results || []));
 }
 
-async function handleSpotifySearch(request, env) {
-  const url = new URL(request.url);
-  const query = (url.searchParams.get('q') || '').trim();
-  if (!query) return json({ error: 'Search query is required' }, 400);
-
+async function getSpotifyAccessToken(env) {
   if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) {
-    return json({ error: 'Spotify credentials are not configured' }, 500);
+    return { error: json({ error: 'Spotify credentials are not configured' }, 500), token: '' };
   }
 
   const auth = btoa(`${env.SPOTIFY_CLIENT_ID}:${env.SPOTIFY_CLIENT_SECRET}`);
@@ -1229,19 +1601,39 @@ async function handleSpotifySearch(request, env) {
     body: 'grant_type=client_credentials'
   });
 
-  if (!tokenResponse.ok) return json({ error: 'Unable to retrieve Spotify token' }, tokenResponse.status);
+  if (!tokenResponse.ok) {
+    return { error: json({ error: 'Unable to retrieve Spotify token' }, tokenResponse.status), token: '' };
+  }
 
   const tokenData = await tokenResponse.json();
-  if (!tokenData.access_token) return json({ error: 'Spotify token missing in response' }, 500);
+  if (!tokenData.access_token) {
+    return { error: json({ error: 'Spotify token missing in response' }, 500), token: '' };
+  }
 
-  const searchResponse = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&limit=12`, {
-    headers: { Authorization: `Bearer ${tokenData.access_token}` }
+  return { error: null, token: tokenData.access_token };
+}
+
+async function handleSpotifySearch(request, env) {
+  const url = new URL(request.url);
+  const query = (url.searchParams.get('q') || '').trim();
+  if (!query) return json({ error: 'Search query is required' }, 400);
+  const type = normalizeSpotifySearchType(url.searchParams.get('type'));
+  const spotifyType = type === 'all' ? 'track,album,artist' : type;
+  const limit = clampNumber(Number(url.searchParams.get('limit')) || 24, 1, 50);
+  const offset = clampNumber(Number(url.searchParams.get('offset')) || 0, 0, 950);
+
+  const tokenResult = await getSpotifyAccessToken(env);
+  if (tokenResult.error) return tokenResult.error;
+
+  const searchResponse = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=${spotifyType}&limit=${limit}&offset=${offset}`, {
+    headers: { Authorization: `Bearer ${tokenResult.token}` }
   });
 
   if (!searchResponse.ok) return json({ error: 'Spotify search request failed' }, searchResponse.status);
 
   const searchData = await searchResponse.json();
-  const items = (searchData.tracks?.items || []).map((track) => ({
+  const tracks = (searchData.tracks?.items || []).map((track) => ({
+    kind: 'track',
     id: track.id,
     name: track.name,
     artists: (track.artists || []).map((artist) => artist.name),
@@ -1253,7 +1645,120 @@ async function handleSpotifySearch(request, env) {
     previewUrl: track.preview_url || ''
   }));
 
-  return json({ items });
+  const albums = (searchData.albums?.items || []).map((album) => ({
+    kind: 'album',
+    id: album.id,
+    name: album.name,
+    artists: (album.artists || []).map((artist) => artist.name),
+    albumName: album.name || '',
+    albumImage: album.images?.[0]?.url || '',
+    explicit: null,
+    confidence: 'unknown',
+    spotifyUrl: album.external_urls?.spotify || '',
+    previewUrl: '',
+    releaseDate: album.release_date || '',
+    totalTracks: Number(album.total_tracks || 0)
+  }));
+
+  const artists = (searchData.artists?.items || []).map((artist) => ({
+    kind: 'artist',
+    id: artist.id,
+    name: artist.name,
+    artists: [artist.name],
+    albumName: '',
+    albumImage: artist.images?.[0]?.url || '',
+    explicit: null,
+    confidence: 'unknown',
+    spotifyUrl: artist.external_urls?.spotify || '',
+    previewUrl: '',
+    followers: Number(artist.followers?.total || 0)
+  }));
+
+  const trackTotal = Number(searchData.tracks?.total || 0);
+  const albumTotal = Number(searchData.albums?.total || 0);
+  const artistTotal = Number(searchData.artists?.total || 0);
+  const trackHasMore = type !== 'album' && type !== 'artist' && (offset + limit) < trackTotal;
+  const albumHasMore = type !== 'track' && type !== 'artist' && (offset + limit) < albumTotal;
+  const artistHasMore = type !== 'track' && type !== 'album' && (offset + limit) < artistTotal;
+
+  let items = [];
+  if (type === 'track') items = tracks;
+  else if (type === 'album') items = albums;
+  else if (type === 'artist') items = artists;
+  else items = [...tracks, ...albums, ...artists];
+
+  return json({
+    items,
+    tracks,
+    albums,
+    artists,
+    page: {
+      type,
+      limit,
+      offset,
+      trackTotal,
+      albumTotal,
+      artistTotal,
+      trackHasMore,
+      albumHasMore,
+      artistHasMore,
+      hasMore: trackHasMore || albumHasMore || artistHasMore
+    }
+  });
+}
+
+async function handleSpotifyAlbumTracks(request, env, rawAlbumId) {
+  const albumId = sanitizeText(rawAlbumId, 100);
+  if (!albumId) return json({ error: 'Album id is required' }, 400);
+
+  const tokenResult = await getSpotifyAccessToken(env);
+  if (tokenResult.error) return tokenResult.error;
+
+  const albumResponse = await fetch(`https://api.spotify.com/v1/albums/${encodeURIComponent(albumId)}`, {
+    headers: { Authorization: `Bearer ${tokenResult.token}` }
+  });
+  if (!albumResponse.ok) return json({ error: 'Unable to load album' }, albumResponse.status);
+
+  const album = await albumResponse.json();
+  const albumInfo = {
+    id: album.id,
+    name: album.name || '',
+    artists: (album.artists || []).map((artist) => artist.name),
+    image: album.images?.[0]?.url || '',
+    spotifyUrl: album.external_urls?.spotify || '',
+    releaseDate: album.release_date || '',
+    totalTracks: Number(album.total_tracks || 0)
+  };
+
+  const tracks = [];
+  let nextUrl = `https://api.spotify.com/v1/albums/${encodeURIComponent(albumId)}/tracks?limit=50&offset=0`;
+  while (nextUrl) {
+    const response = await fetch(nextUrl, {
+      headers: { Authorization: `Bearer ${tokenResult.token}` }
+    });
+    if (!response.ok) return json({ error: 'Unable to load album tracks' }, response.status);
+
+    const page = await response.json();
+    (page.items || []).forEach((track) => {
+      tracks.push({
+        kind: 'track',
+        id: track.id || `${albumId}:${track.track_number}`,
+        name: track.name || '',
+        artists: (track.artists || []).map((artist) => artist.name),
+        albumName: albumInfo.name,
+        albumImage: albumInfo.image,
+        explicit: typeof track.explicit === 'boolean' ? track.explicit : null,
+        confidence: deriveContentConfidence(track.explicit),
+        spotifyUrl: track.external_urls?.spotify || '',
+        previewUrl: track.preview_url || '',
+        trackNumber: Number(track.track_number || 0)
+      });
+    });
+
+    nextUrl = page.next || '';
+  }
+
+  return json({ album: albumInfo, items: tracks });
 }
 function requireAdmin(request, env) {
   if (!isAdminAuthorized(request, env)) return unauthorizedResponse();
@@ -1334,6 +1839,12 @@ export default {
 
       if (request.method === 'GET' && (url.pathname === '/api/public/spotify/search' || url.pathname === '/api/spotify/search')) {
         return withCors(await handleSpotifySearch(request, env), corsHeaders);
+      }
+
+      if (request.method === 'GET' && (url.pathname.startsWith('/api/public/spotify/album/') || url.pathname.startsWith('/api/spotify/album/')) && url.pathname.endsWith('/tracks')) {
+        const parts = url.pathname.split('/');
+        const albumId = parts[parts.length - 2] || '';
+        return withCors(await handleSpotifyAlbumTracks(request, env, albumId), corsHeaders);
       }
 
       if (request.method === 'POST' && url.pathname === '/api/queue') {

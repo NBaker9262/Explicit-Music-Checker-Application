@@ -28,6 +28,7 @@ The same defaults are in code, and also set in `wrangler.toml` vars.
 
 - `GET /api/health`
 - `GET /api/public/spotify/search?q=...`
+- `GET /api/public/spotify/album/:id/tracks`
 - `POST /api/public/request`
 - `GET /api/public/queue`
 - `GET /api/public/feed`
@@ -58,6 +59,30 @@ The admin page supports drag reorder for active queue positions and bottom contr
 - API returns `429` with `retryAfterSec` and `nextAllowedAt` when limited.
 - Public UI shows a modal and cooldown timer so users know exactly when they can request again.
 
+## Lyrics + moderation pipeline (free)
+
+Every public request now runs this backend flow before final status is set:
+
+1. Try to fetch lyrics from free APIs:
+   - `lyrics.ovh`
+   - `lrclib`
+2. Run OpenAI moderation (`omni-moderation-latest`) on lyrics text.
+3. Run theme keyword scoring for:
+   - suggestive themes
+   - alcohol
+   - drugs
+   - violence
+4. Combine that with Spotify explicit flag + existing score model:
+   - `approved` when low risk
+   - `pending` (shown as flagged) when medium risk
+   - `rejected` (shown as explicit) when high risk or profanity/explicit
+
+Notes:
+- Uses OpenAI Moderation endpoint plus free lyrics APIs.
+- Based on OpenAI docs/pricing, moderation is free for API users.
+- If lyrics providers fail, the app falls back to the existing moderation logic.
+- You can disable lyrics moderation for debugging by setting Worker var `DISABLE_LYRICS_MODERATION=1`.
+
 ## Local development
 
 1. Install dependencies:
@@ -65,12 +90,14 @@ The admin page supports drag reorder for active queue positions and bottom contr
 2. Set Spotify credentials:
    - `SPOTIFY_CLIENT_ID`
    - `SPOTIFY_CLIENT_SECRET`
-3. (Optional) override admin credentials:
+3. (Optional) set OpenAI moderation key:
+   - `OPENAI_API_KEY`
+4. (Optional) override admin credentials:
    - `ADMIN_USERNAME`
    - `ADMIN_PASSWORD`
-4. Start server:
+5. Start server:
    - `npm start`
-5. Open:
+6. Open:
    - `http://localhost:3000`
 
 ## Cloudflare Worker + D1
@@ -85,7 +112,12 @@ The admin page supports drag reorder for active queue positions and bottom contr
 4. Set Spotify secrets:
    - `npx wrangler secret put SPOTIFY_CLIENT_ID`
    - `npx wrangler secret put SPOTIFY_CLIENT_SECRET`
-5. Deploy API:
+5. Set OpenAI moderation key:
+   - `npx wrangler secret put OPENAI_API_KEY`
+6. (Optional) disable lyrics moderation:
+   - `npx wrangler secret put DISABLE_LYRICS_MODERATION`
+   - enter `1` when prompted
+7. Deploy API:
    - `npm run cf:deploy`
 
 ## Frontend API target

@@ -25,8 +25,13 @@
         <input type="text" id="searchInput" placeholder="Song title or artist" autocomplete="off">
         <button id="searchBtn" class="btn btn-primary" type="button">Search</button>
       </div>
+      <div id="albumViewBar" class="panel-head album-view-bar" hidden>
+        <button id="albumBackBtn" class="btn" type="button">Back</button>
+        <p id="albumViewTitle" class="inline-hint"></p>
+      </div>
       <p id="searchStatus" class="status-message" aria-live="polite"></p>
       <div id="searchResults" class="results-grid"></div>
+      <div id="searchSentinel" class="search-sentinel" aria-hidden="true"></div>
     </section>
 
     <section class="panel" id="selectedPanel" hidden>
