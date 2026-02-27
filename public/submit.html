@@ -13,6 +13,7 @@
             <nav class="topbar-nav">
                 <a href="/">Search</a>
                 <a href="/queue.html">Queue</a>
+                <a href="/analytics.html">Analytics</a>
             </nav>
         </header>
 
@@ -26,6 +27,18 @@
             <form id="submitForm" class="form-grid">
                 <label for="requesterName">Requester name</label>
                 <input id="requesterName" name="requesterName" type="text" maxlength="80" required>
+
+                <label for="requesterRole">Requester role</label>
+                <select id="requesterRole" name="requesterRole">
+                    <option value="guest">Guest</option>
+                    <option value="student">Student</option>
+                    <option value="staff">Staff</option>
+                    <option value="organizer">Organizer</option>
+                    <option value="admin">Admin</option>
+                </select>
+
+                <label for="eventDate">Event date (optional)</label>
+                <input id="eventDate" name="eventDate" type="date">
 
                 <label for="customMessage">Custom message (optional)</label>
                 <textarea id="customMessage" name="customMessage" rows="4" maxlength="500" placeholder="Add any context for the review team"></textarea>

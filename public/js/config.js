@@ -1,3 +1,7 @@
-window.APP_CONFIG = window.APP_CONFIG || {
-  apiBaseUrl: 'https://devtools.devprod.cloudflare.dev/js_app?theme=systemPreferred&ws=127.0.0.1%3A9229%2Fws&domain=music-queue-api&debugger=true'
-};
+(() => {
+  const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+  window.APP_CONFIG = window.APP_CONFIG || {
+    apiBaseUrl: isLocalHost ? '' : 'https://music-queue-api.noahmathmaster.workers.dev'
+  };
+})();

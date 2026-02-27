@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Queue Analytics</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <main class="page-shell">
+    <header class="topbar">
+      <h1>Queue Analytics</h1>
+      <nav class="topbar-nav">
+        <a href="/">Search</a>
+        <a href="/submit.html">Submit</a>
+        <a href="/queue.html">Queue</a>
+      </nav>
+    </header>
+
+    <section class="panel">
+      <div class="queue-toolbar">
+        <h2>Overview</h2>
+        <button id="refreshAnalyticsBtn" class="btn" type="button">Refresh</button>
+      </div>
+      <p id="analyticsStatus" class="status-message" aria-live="polite"></p>
+      <div id="totalsGrid" class="analytics-grid"></div>
+    </section>
+
+    <section class="panel analytics-layout">
+      <article>
+        <h2>Status breakdown</h2>
+        <div id="statusBreakdown" class="analytics-list"></div>
+      </article>
+      <article>
+        <h2>Top requested artists</h2>
+        <div id="topArtists" class="analytics-list"></div>
+      </article>
+      <article>
+        <h2>Most rejected tracks</h2>
+        <div id="rejectedTracks" class="analytics-list"></div>
+      </article>
+      <article>
+        <h2>Moderation presets used</h2>
+        <div id="moderationReasons" class="analytics-list"></div>
+      </article>
+    </section>
+  </main>
+
+<script src="/js/config.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/analytics.js"></script>
+</body>
+</html>

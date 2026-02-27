@@ -1,88 +1,80 @@
 # Explicit-Music-Checker-Application
-An app for searching Spotify tracks, selecting an exact song, submitting a request, and managing a review queue.
 
-## Current flow
+A Spotify-based song request app with queue moderation and analytics.
 
-1. Search for a song on the main page (`/`).
-2. Select one track from Spotify search results.
-3. Continue to the submit page (`/submit.html`) and add requester name and optional custom message.
-4. Submit to the server queue.
-5. Review queue items on `/queue.html` and mark status as pending, approved, or rejected.
+## What this app now supports
 
-## Notes
+- Search Spotify tracks.
+- Submit requests with requester role and optional event date.
+- Duplicate request detection (joins existing pending request and increments vote count).
+- Content confidence tags (`clean`, `explicit`, `unknown`).
+- Moderation presets during review (instead of free-text-only moderation).
+- Priority scoring based on vote count, requester role, event date urgency, and confidence.
+- Analytics dashboard for top artists, approval rate, and most rejected tracks.
 
-- The legacy UI has been archived to `archive/old-legacy`.
-- The original Express queue is in-memory and resets on restart.
+## App routes
 
-## Cloudflare free setup (beginner)
+- `/` search and select a song
+- `/submit.html` submit request details
+- `/queue.html` moderation queue
+- `/analytics.html` analytics dashboard
 
-This repository now includes a Cloudflare Worker API with D1 SQL persistence.
+## API routes
 
-### Where to do each step
+- `GET /api/health`
+- `GET /api/spotify/search?q=...`
+- `GET /api/queue`
+- `POST /api/queue`
+- `PATCH /api/queue/:id`
+- `GET /api/analytics`
 
-- **Cloudflare Dashboard (browser):** create D1 database, check data in SQL console.
-- **GitHub Codespace terminal:** install tools, run commands, migrate database, deploy Worker.
-- **Local browser / localhost:** run frontend locally while calling Worker API.
+## Local development (Express)
 
-### 1) One-time setup in Codespaces
+1. Install dependencies:
+   - `npm install`
+2. Set Spotify credentials:
+   - `SPOTIFY_CLIENT_ID`
+   - `SPOTIFY_CLIENT_SECRET`
+3. Start server:
+   - `npm start`
+4. Open:
+   - `http://localhost:3000`
 
-1. Run: `npm install`
-2. Run: `npx wrangler login` (opens browser, you approve access)
-3. In Cloudflare Dashboard, create a D1 database named `music-queue`
-4. Run: `npx wrangler d1 list`
-5. Copy your database id into `wrangler.toml` for `database_id`
+## Cloudflare Worker + D1 setup
 
-### 2) Create table in D1 (remote)
+1. Install dependencies:
+   - `npm install`
+2. Login to Cloudflare:
+   - `npx wrangler login`
+3. Create D1 database (once):
+   - `npx wrangler d1 create music-queue`
+4. Put your `database_id` in `wrangler.toml`.
+5. Apply migrations:
+   - Local: `npm run cf:migrate:local`
+   - Remote: `npm run cf:migrate:remote`
+6. Set Worker secrets:
+   - `npx wrangler secret put SPOTIFY_CLIENT_ID`
+   - `npx wrangler secret put SPOTIFY_CLIENT_SECRET`
+7. Run locally with Worker runtime:
+   - `npm run cf:dev`
+8. Deploy API:
+   - `npm run cf:deploy`
 
-1. Run: `npm run cf:migrate:remote`
-2. This applies `cloudflare/migrations/0001_init.sql`
+## Frontend API config
 
-### 3) Set Worker secrets (Spotify)
+Edit `public/js/config.js` and point `apiBaseUrl` to your deployed Worker URL.
+The current config already uses same-origin API on localhost and Worker API in production.
 
-Run these in terminal:
-
-- `npx wrangler secret put SPOTIFY_CLIENT_ID`
-- `npx wrangler secret put SPOTIFY_CLIENT_SECRET`
-
-### 4) Local development in Codespaces
-
-1. Start Worker API: `npm run cf:dev`
-2. Wrangler prints a local URL (example: `http://127.0.0.1:8787`)
-3. Keep that running.
-4. In another terminal, run your frontend however you prefer (for example a simple static server).
-
-If frontend is on a different host/port, edit `public/js/config.js`:
+Example:
 
 ```js
 window.APP_CONFIG = {
-	apiBaseUrl: 'http://127.0.0.1:8787'
+  apiBaseUrl: 'https://music-queue-api.your-subdomain.workers.dev'
 };
 ```
 
-### 5) Deploy for public use
+## Why your previous Cloudflare 404 happened
 
-1. Deploy API: `npm run cf:deploy`
-2. Copy your Worker URL (ends with `.workers.dev`)
-3. Update `public/js/config.js`:
+Your frontend was calling a Worker URL that did not match the active Worker service and `config.js` contained a debugger URL value.
 
-```js
-window.APP_CONFIG = {
-	apiBaseUrl: 'https://your-worker-name.your-subdomain.workers.dev'
-};
-```
-
-4. Deploy frontend to Cloudflare Pages (connect this GitHub repo in Dashboard).
-5. Open your Pages URL and test search/submit/queue.
-
-### 6) CORS for production
-
-- `wrangler.toml` has `ALLOWED_ORIGIN`.
-- For quick setup, keep `*`.
-- For stricter security later, set it to your Pages URL and redeploy.
-
-## Files added for Cloudflare
-
-- `cloudflare/worker.js` (API routes + D1 + Spotify proxy)
-- `cloudflare/migrations/0001_init.sql` (database schema)
-- `wrangler.toml` (Worker + D1 binding)
-- `public/js/config.js` (frontend API base URL)
+Use the Worker URL from `wrangler deploy` output and keep `public/js/config.js` aligned with that URL.

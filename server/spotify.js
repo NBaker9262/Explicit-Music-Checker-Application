@@ -61,7 +61,8 @@ router.get('/search', async (req, res) => {
             artists: (track.artists || []).map((artist) => artist.name),
             albumName: track.album?.name || '',
             albumImage: track.album?.images?.[0]?.url || '',
-            explicit: Boolean(track.explicit),
+            explicit: typeof track.explicit === 'boolean' ? track.explicit : null,
+            confidence: track.explicit === true ? 'explicit' : track.explicit === false ? 'clean' : 'unknown',
             previewUrl: track.preview_url || '',
             spotifyUrl: track.external_urls?.spotify || ''
         }));
