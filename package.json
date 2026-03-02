@@ -8,6 +8,8 @@
     "start": "node server/server.js",
     "cf:dev": "wrangler dev",
     "cf:deploy": "wrangler deploy",
+    "cf:deploy:api": "wrangler deploy --config wrangler.toml",
+    "cf:deploy:frontend": "wrangler deploy --config wrangler.frontend.toml",
     "cf:whoami": "wrangler whoami",
     "cf:deployments": "wrangler deployments list --json",
     "cf:tail": "wrangler tail",

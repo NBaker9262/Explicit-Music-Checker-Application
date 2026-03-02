@@ -37,6 +37,10 @@ const SOUND_CLOUD_PUBLIC_SEARCH_PAGE_URL = 'https://soundcloud.com/search/sounds
 const queue = [];
 let nextQueueId = 1;
 const rateLimitByIp = new Map();
+const djPlaybackState = {
+  nowPlaying: null,
+  history: []
+};
 
 function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -595,6 +599,55 @@ function mergeVibeTags(existingTags, incomingTags) {
   return normalizeVibeTags([...(existingTags || []), ...(incomingTags || [])]);
 }
 
+function sanitizePlaybackTrackPayload(payload) {
+  const artists = Array.isArray(payload?.artists)
+    ? payload.artists.map((artist) => sanitizeText(artist, 120)).filter(Boolean).slice(0, 8)
+    : [];
+  return {
+    trackId: sanitizeText(payload?.trackId || '', 64),
+    trackName: sanitizeText(payload?.trackName || '', 200),
+    artists,
+    albumImage: sanitizeText(payload?.albumImage || '', 400),
+    spotifyUrl: sanitizeText(payload?.spotifyUrl || '', 400),
+    playedBy: sanitizeText(payload?.playedBy || '', 80) || 'DJ',
+    source: sanitizeText(payload?.source || 'dj', 40) || 'dj',
+    playedAt: sanitizeText(payload?.playedAt || '', 40) || new Date().toISOString()
+  };
+}
+
+function buildPlaybackTrackFromQueueItem(item, { playedBy = 'DJ', source = 'dj' } = {}) {
+  return sanitizePlaybackTrackPayload({
+    trackId: item.trackId,
+    trackName: item.trackName,
+    artists: item.artists,
+    albumImage: item.albumImage,
+    spotifyUrl: item.spotifyUrl,
+    playedBy,
+    source,
+    playedAt: new Date().toISOString()
+  });
+}
+
+function setNowPlayingLocal(track) {
+  djPlaybackState.nowPlaying = sanitizePlaybackTrackPayload(track);
+  return djPlaybackState.nowPlaying;
+}
+
+function appendPlaybackHistoryLocal(track) {
+  const entry = sanitizePlaybackTrackPayload(track);
+  if (!entry.trackName || !entry.artists.length) return entry;
+  djPlaybackState.history.unshift(entry);
+  djPlaybackState.history = djPlaybackState.history.slice(0, 60);
+  return entry;
+}
+
+function getPlaybackSnapshotLocal(limit = 20) {
+  return {
+    nowPlaying: djPlaybackState.nowPlaying,
+    history: djPlaybackState.history.slice(0, clampNumber(Number(limit) || 20, 1, 60))
+  };
+}
+
 function getMaxActiveSetOrderLocal() {
   return queue.reduce((maxOrder, entry) => {
     if (entry.status === 'rejected') return maxOrder;
@@ -660,7 +713,7 @@ function reorderActiveQueueLocal(itemId, beforeId) {
   return { ok: true };
 }
 
-function runAdminControlActionLocal(action) {
+function runAdminControlActionLocal(action, options = {}) {
   const normalizedAction = sanitizeText(action, 64).toLowerCase();
   const now = new Date().toISOString();
 
@@ -675,10 +728,16 @@ function runAdminControlActionLocal(action) {
 
     const index = queue.findIndex((entry) => entry.id === nextApproved.id);
     if (index >= 0) {
+      const playbackTrack = buildPlaybackTrackFromQueueItem(nextApproved, {
+        playedBy: sanitizeText(options.playedBy, 80) || 'DJ',
+        source: 'play_next_approved'
+      });
+      setNowPlayingLocal(playbackTrack);
+      appendPlaybackHistoryLocal(playbackTrack);
       queue.splice(index, 1);
     }
     renumberActiveQueueLocal();
-    return { updatedCount: 1, action: normalizedAction, playedItemId: nextApproved.id };
+    return { updatedCount: 1, action: normalizedAction, playedItemId: nextApproved.id, nowPlaying: djPlaybackState.nowPlaying };
   }
 
   if (normalizedAction === 'clear_all') {
@@ -716,6 +775,29 @@ function runAdminControlActionLocal(action) {
   if (normalizedAction === 'renumber_active') {
     renumberActiveQueueLocal();
     return { updatedCount: 0, action: normalizedAction };
+  }
+
+  if (normalizedAction === 'pin_track') {
+    const itemId = Number(options.itemId);
+    if (!Number.isInteger(itemId) || itemId <= 0) {
+      return { updatedCount: 0, action: normalizedAction, error: 'Invalid item id' };
+    }
+
+    const item = queue.find((entry) => entry.id === itemId);
+    if (!item) {
+      return { updatedCount: 0, action: normalizedAction, error: 'Queue item not found' };
+    }
+    if (item.status === 'rejected') {
+      return { updatedCount: 0, action: normalizedAction, error: 'Explicit items cannot be pinned to queue.' };
+    }
+
+    item.status = 'approved';
+    item.moderationReason = '';
+    item.reviewNote = 'Pinned to top by DJ.';
+    item.setOrder = 0;
+    item.updatedAt = now;
+    renumberActiveQueueLocal();
+    return { updatedCount: 1, action: normalizedAction, pinnedItemId: itemId };
   }
 
   return { updatedCount: 0, action: normalizedAction, error: 'Unsupported control action' };
@@ -1413,7 +1495,10 @@ app.post(['/api/admin/control', '/api/dj/control'], (req, res) => {
     return res.status(400).json({ error: 'Control action is required' });
   }
 
-  const result = runAdminControlActionLocal(action);
+  const result = runAdminControlActionLocal(action, {
+    itemId: req.body?.itemId,
+    playedBy: sanitizeText(req.body?.playedBy, 80) || 'DJ'
+  });
   if (result.error) {
     return res.status(400).json({ error: result.error });
   }
@@ -1425,6 +1510,50 @@ app.get(['/api/admin/analytics', '/api/dj/analytics', '/api/analytics'], (req, r
   if (!requireAdmin(req, res)) return;
   const normalized = queue.map(normalizeQueueItem);
   return res.json(buildAnalyticsFromItems(normalized));
+});
+
+app.get(['/api/admin/playback', '/api/dj/playback'], (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const limit = clampNumber(Number(req.query?.limit) || 20, 1, 60);
+  return res.json(getPlaybackSnapshotLocal(limit));
+});
+
+app.post(['/api/admin/playback/now-playing', '/api/dj/playback/now-playing'], (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const track = sanitizePlaybackTrackPayload({
+    trackId: req.body?.trackId,
+    trackName: req.body?.trackName,
+    artists: req.body?.artists,
+    albumImage: req.body?.albumImage,
+    spotifyUrl: req.body?.spotifyUrl,
+    playedBy: sanitizeText(req.body?.playedBy, 80) || 'DJ',
+    source: sanitizeText(req.body?.source, 40) || 'dj_manual',
+    playedAt: new Date().toISOString()
+  });
+  if (!track.trackName || !track.artists.length) {
+    return res.status(400).json({ error: 'Track name and artists are required' });
+  }
+  return res.json({ ok: true, nowPlaying: setNowPlayingLocal(track) });
+});
+
+app.post(['/api/admin/playback/mark-played', '/api/dj/playback/mark-played'], (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const track = sanitizePlaybackTrackPayload({
+    trackId: req.body?.trackId,
+    trackName: req.body?.trackName,
+    artists: req.body?.artists,
+    albumImage: req.body?.albumImage,
+    spotifyUrl: req.body?.spotifyUrl,
+    playedBy: sanitizeText(req.body?.playedBy, 80) || 'DJ',
+    source: sanitizeText(req.body?.source, 40) || 'dj_manual',
+    playedAt: new Date().toISOString()
+  });
+  if (!track.trackName || !track.artists.length) {
+    return res.status(400).json({ error: 'Track name and artists are required' });
+  }
+  setNowPlayingLocal(track);
+  appendPlaybackHistoryLocal(track);
+  return res.json({ ok: true });
 });
 
 app.get(['/api/admin/soundcloud/resolve', '/api/dj/soundcloud/resolve'], async (req, res) => {

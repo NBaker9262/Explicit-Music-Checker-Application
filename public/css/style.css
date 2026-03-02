@@ -614,6 +614,26 @@ select:focus {
     gap: 10px;
 }
 
+.now-playing-card {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--surface-soft);
+    padding: 12px;
+}
+
+.now-playing-card h3 {
+    margin: 0 0 6px;
+}
+
+.now-playing-card p {
+    margin: 0 0 4px;
+    color: var(--muted);
+}
+
+.playback-history-heading {
+    margin-top: 12px;
+}
+
 .toggle-row {
     margin-top: 10px;
     display: inline-flex;

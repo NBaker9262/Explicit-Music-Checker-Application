@@ -66,6 +66,21 @@
 
     <section class="panel">
       <div class="panel-head">
+        <h2>Now Playing</h2>
+        <button id="refreshPlaybackBtn" class="btn" type="button">Refresh</button>
+      </div>
+      <p id="playbackStatus" class="status-message" aria-live="polite"></p>
+      <div class="now-playing-card">
+        <h3 id="nowPlayingTitle">No track active</h3>
+        <p id="nowPlayingMeta">Start playback from queue to persist now-playing state.</p>
+        <p id="nowPlayingBy">Played by: -</p>
+      </div>
+      <h3 class="playback-history-heading">Recent Playback</h3>
+      <div id="playbackHistoryList" class="queue-list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
         <h2>DJ Quick Add</h2>
       </div>
       <p class="inline-hint">Search Spotify and add tracks directly to queue. DJ requests bypass rate limits.</p>

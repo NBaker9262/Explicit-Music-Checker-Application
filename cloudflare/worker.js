@@ -74,30 +74,30 @@ const LYRICS_MODERATION_HINT_TERMS = {
 const LOCAL_PROFANITY_TERMS = ['fuck', 'fucking', 'shit', 'bitch', 'motherfucker', 'asshole', 'dick', 'pussy', 'nigga', 'nigger', 'cunt'];
 const DEFAULT_SAFE_TRACK_EXCEPTIONS = ['titanium'];
 const NIGHTLY_BENCHMARK_SONG_POOL = [
-  { name: 'Titanium', artist: 'David Guetta', explicit: false },
-  { name: 'Happy', artist: 'Pharrell Williams', explicit: false },
-  { name: 'Uptown Funk', artist: 'Mark Ronson', explicit: false },
-  { name: 'Firework', artist: 'Katy Perry', explicit: false },
-  { name: 'Shut Up and Dance', artist: 'Walk the Moon', explicit: false },
-  { name: 'Best Day of My Life', artist: 'American Authors', explicit: false },
-  { name: 'Can\'t Stop the Feeling', artist: 'Justin Timberlake', explicit: false },
-  { name: 'Treasure', artist: 'Bruno Mars', explicit: false },
-  { name: 'Levitating', artist: 'Dua Lipa', explicit: false },
-  { name: 'Peaches', artist: 'Justin Bieber', explicit: false },
-  { name: 'Wild Thoughts', artist: 'DJ Khaled', explicit: false },
-  { name: 'Talk Dirty', artist: 'Jason Derulo', explicit: false },
-  { name: 'S&M', artist: 'Rihanna', explicit: false },
-  { name: 'Gold Digger', artist: 'Kanye West', explicit: false },
-  { name: 'Blurred Lines', artist: 'Robin Thicke', explicit: false },
-  { name: 'Cake By The Ocean', artist: 'DNCE', explicit: false },
-  { name: 'WAP', artist: 'Cardi B', explicit: true },
-  { name: 'Anaconda', artist: 'Nicki Minaj', explicit: true },
-  { name: 'Mask Off', artist: 'Future', explicit: true },
-  { name: 'No Role Modelz', artist: 'J. Cole', explicit: true },
-  { name: 'Get Low', artist: 'Lil Jon', explicit: true },
-  { name: 'Back That Azz Up', artist: 'Juvenile', explicit: true },
-  { name: 'Pound Town', artist: 'Sexyy Red', explicit: true },
-  { name: 'Super Gremlin', artist: 'Kodak Black', explicit: true }
+  { name: 'Titanium', artist: 'David Guetta', explicit: false, bucket: 'good' },
+  { name: 'Happy', artist: 'Pharrell Williams', explicit: false, bucket: 'good' },
+  { name: 'Uptown Funk', artist: 'Mark Ronson', explicit: false, bucket: 'good' },
+  { name: 'Firework', artist: 'Katy Perry', explicit: false, bucket: 'good' },
+  { name: 'Shut Up and Dance', artist: 'Walk the Moon', explicit: false, bucket: 'good' },
+  { name: 'Best Day of My Life', artist: 'American Authors', explicit: false, bucket: 'good' },
+  { name: 'Can\'t Stop the Feeling', artist: 'Justin Timberlake', explicit: false, bucket: 'good' },
+  { name: 'Treasure', artist: 'Bruno Mars', explicit: false, bucket: 'good' },
+  { name: 'Levitating', artist: 'Dua Lipa', explicit: false, bucket: 'edge' },
+  { name: 'Peaches', artist: 'Justin Bieber', explicit: false, bucket: 'edge' },
+  { name: 'Wild Thoughts', artist: 'DJ Khaled', explicit: false, bucket: 'edge' },
+  { name: 'Talk Dirty', artist: 'Jason Derulo', explicit: false, bucket: 'edge' },
+  { name: 'S&M', artist: 'Rihanna', explicit: false, bucket: 'edge' },
+  { name: 'Gold Digger', artist: 'Kanye West', explicit: false, bucket: 'edge' },
+  { name: 'Blurred Lines', artist: 'Robin Thicke', explicit: false, bucket: 'edge' },
+  { name: 'Cake By The Ocean', artist: 'DNCE', explicit: false, bucket: 'edge' },
+  { name: 'WAP', artist: 'Cardi B', explicit: true, bucket: 'bad' },
+  { name: 'Anaconda', artist: 'Nicki Minaj', explicit: true, bucket: 'bad' },
+  { name: 'Mask Off', artist: 'Future', explicit: true, bucket: 'bad' },
+  { name: 'No Role Modelz', artist: 'J. Cole', explicit: true, bucket: 'bad' },
+  { name: 'Get Low', artist: 'Lil Jon', explicit: true, bucket: 'bad' },
+  { name: 'Back That Azz Up', artist: 'Juvenile', explicit: true, bucket: 'bad' },
+  { name: 'Pound Town', artist: 'Sexyy Red', explicit: true, bucket: 'bad' },
+  { name: 'Super Gremlin', artist: 'Kodak Black', explicit: true, bucket: 'bad' }
 ];
 const REQUEST_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 let rateLimitSchemaReady = false;
@@ -1114,13 +1114,157 @@ async function reorderActiveQueue(env, itemId, beforeId) {
   return { ok: true };
 }
 
-async function runAdminControlAction(env, action) {
+async function ensureDjPlaybackTables(env) {
+  await env.DB.batch([
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS dj_playback_state (
+        state_key TEXT PRIMARY KEY,
+        state_value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`
+    ),
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS dj_playback_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        track_id TEXT,
+        track_name TEXT NOT NULL,
+        artists TEXT NOT NULL,
+        album_image TEXT,
+        spotify_url TEXT,
+        played_by TEXT,
+        played_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'dj'
+      )`
+    ),
+    env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_dj_playback_history_played_at ON dj_playback_history(played_at DESC)')
+  ]);
+}
+
+function sanitizePlaybackTrackPayload(payload) {
+  const artists = Array.isArray(payload?.artists)
+    ? payload.artists.map((artist) => sanitizeText(artist, 120)).filter(Boolean).slice(0, 8)
+    : [];
+  return {
+    trackId: sanitizeText(payload?.trackId || '', 64),
+    trackName: sanitizeText(payload?.trackName || '', 200),
+    artists,
+    albumImage: sanitizeText(payload?.albumImage || '', 400),
+    spotifyUrl: sanitizeText(payload?.spotifyUrl || '', 400),
+    playedBy: sanitizeText(payload?.playedBy || '', 80) || 'DJ',
+    source: sanitizeText(payload?.source || 'dj', 40) || 'dj',
+    playedAt: sanitizeText(payload?.playedAt || '', 40)
+  };
+}
+
+function buildPlaybackTrackFromQueueRow(row, { playedBy = 'DJ', source = 'dj' } = {}) {
+  const item = normalizeRequestRow(row);
+  return sanitizePlaybackTrackPayload({
+    trackId: item.trackId,
+    trackName: item.trackName,
+    artists: item.artists,
+    albumImage: item.albumImage,
+    spotifyUrl: item.spotifyUrl,
+    playedBy,
+    source,
+    playedAt: new Date().toISOString()
+  });
+}
+
+async function setNowPlayingState(env, track) {
+  await ensureDjPlaybackTables(env);
+  const now = new Date().toISOString();
+  const payload = sanitizePlaybackTrackPayload({ ...track, playedAt: track?.playedAt || now });
+  await env.DB.prepare(
+    `INSERT INTO dj_playback_state (state_key, state_value, updated_at)
+     VALUES ('now_playing', ?, ?)
+     ON CONFLICT(state_key) DO UPDATE SET state_value = excluded.state_value, updated_at = excluded.updated_at`
+  ).bind(JSON.stringify(payload), now).run();
+  return payload;
+}
+
+async function appendPlaybackHistory(env, track) {
+  await ensureDjPlaybackTables(env);
+  const payload = sanitizePlaybackTrackPayload({ ...track, playedAt: track?.playedAt || new Date().toISOString() });
+  if (!payload.trackName || !payload.artists.length) return payload;
+  await env.DB.prepare(
+    `INSERT INTO dj_playback_history
+      (track_id, track_name, artists, album_image, spotify_url, played_by, played_at, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    payload.trackId,
+    payload.trackName,
+    JSON.stringify(payload.artists),
+    payload.albumImage,
+    payload.spotifyUrl,
+    payload.playedBy,
+    payload.playedAt,
+    payload.source
+  ).run();
+  return payload;
+}
+
+async function getDjPlaybackSnapshot(env, limit = 20) {
+  await ensureDjPlaybackTables(env);
+  const stateRow = await env.DB.prepare(
+    "SELECT state_value, updated_at FROM dj_playback_state WHERE state_key = 'now_playing' LIMIT 1"
+  ).first();
+  let nowPlaying = null;
+  try {
+    nowPlaying = stateRow?.state_value ? JSON.parse(stateRow.state_value) : null;
+  } catch {
+    nowPlaying = null;
+  }
+
+  const historyRows = await env.DB.prepare(
+    `SELECT * FROM dj_playback_history ORDER BY played_at DESC, id DESC LIMIT ?`
+  ).bind(clampNumber(Number(limit) || 20, 1, 60)).all();
+
+  const history = (historyRows.results || []).map((row) => ({
+    id: Number(row.id || 0),
+    trackId: sanitizeText(row.track_id || '', 64),
+    trackName: sanitizeText(row.track_name || '', 200),
+    artists: parseArtists(row.artists),
+    albumImage: sanitizeText(row.album_image || '', 400),
+    spotifyUrl: sanitizeText(row.spotify_url || '', 400),
+    playedBy: sanitizeText(row.played_by || '', 80),
+    playedAt: sanitizeText(row.played_at || '', 40),
+    source: sanitizeText(row.source || '', 40)
+  }));
+
+  return { nowPlaying, history };
+}
+
+async function pinTrackToTop(env, itemId) {
+  if (!Number.isInteger(itemId) || itemId <= 0) {
+    return { ok: false, error: 'Invalid item id' };
+  }
+
+  const existing = await env.DB.prepare('SELECT * FROM requests WHERE id = ?').bind(itemId).first();
+  if (!existing) {
+    return { ok: false, error: 'Queue item not found' };
+  }
+  if (existing.status === 'rejected') {
+    return { ok: false, error: 'Explicit items cannot be pinned to queue.' };
+  }
+
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `UPDATE requests
+     SET status = 'approved', moderation_reason = '', set_order = 0, updated_at = ?, review_note = ?
+     WHERE id = ?`
+  ).bind(now, 'Pinned to top by DJ.', itemId).run();
+
+  await renumberActiveQueue(env);
+  return { ok: true, itemId };
+}
+
+async function runAdminControlAction(env, action, options = {}) {
   const now = new Date().toISOString();
   const normalizedAction = sanitizeText(action, 64).toLowerCase();
 
   if (normalizedAction === 'play_next_approved') {
     const nextApproved = await env.DB.prepare(
-      `SELECT id FROM requests
+      `SELECT * FROM requests
        WHERE status = 'approved'
        ORDER BY
         CASE WHEN set_order IS NULL THEN 1 ELSE 0 END,
@@ -1133,9 +1277,16 @@ async function runAdminControlAction(env, action) {
       return { updatedCount: 0, action: normalizedAction };
     }
 
+    const playbackTrack = buildPlaybackTrackFromQueueRow(nextApproved, {
+      playedBy: sanitizeText(options.playedBy || '', 80) || 'DJ',
+      source: 'play_next_approved'
+    });
+    await setNowPlayingState(env, playbackTrack);
+    await appendPlaybackHistory(env, playbackTrack);
+
     await env.DB.prepare('DELETE FROM requests WHERE id = ?').bind(nextApproved.id).run();
     await renumberActiveQueue(env);
-    return { updatedCount: 1, action: normalizedAction, playedItemId: Number(nextApproved.id) };
+    return { updatedCount: 1, action: normalizedAction, playedItemId: Number(nextApproved.id), nowPlaying: playbackTrack };
   }
 
   if (normalizedAction === 'clear_all') {
@@ -1163,6 +1314,15 @@ async function runAdminControlAction(env, action) {
   if (normalizedAction === 'renumber_active') {
     await renumberActiveQueue(env);
     return { updatedCount: 0, action: normalizedAction };
+  }
+
+  if (normalizedAction === 'pin_track') {
+    const itemId = Number(options.itemId);
+    const pinResult = await pinTrackToTop(env, itemId);
+    if (!pinResult.ok) {
+      return { updatedCount: 0, action: normalizedAction, error: pinResult.error || 'Unable to pin track' };
+    }
+    return { updatedCount: 1, action: normalizedAction, pinnedItemId: itemId };
   }
 
   return { updatedCount: 0, action: normalizedAction, error: 'Unsupported control action' };
@@ -1675,7 +1835,10 @@ async function handleAdminControl(request, env) {
     return json({ error: 'Control action is required' }, 400);
   }
 
-  const result = await runAdminControlAction(env, action);
+  const result = await runAdminControlAction(env, action, {
+    itemId: body.itemId,
+    playedBy: sanitizeText(body.playedBy, 80) || 'DJ'
+  });
   if (result.error) {
     return json({ error: result.error }, 400);
   }
@@ -1686,6 +1849,68 @@ async function handleAdminControl(request, env) {
 async function handleGetAdminAnalytics(env) {
   const result = await env.DB.prepare('SELECT * FROM requests').all();
   return json(buildAnalyticsFromRows(result.results || []));
+}
+
+async function handleGetDjPlayback(env, request) {
+  const url = new URL(request.url);
+  const limit = clampNumber(Number(url.searchParams.get('limit')) || 20, 1, 60);
+  const snapshot = await getDjPlaybackSnapshot(env, limit);
+  return json(snapshot);
+}
+
+async function handleSetDjNowPlaying(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON payload' }, 400);
+  }
+
+  const track = sanitizePlaybackTrackPayload({
+    trackId: body.trackId,
+    trackName: body.trackName,
+    artists: body.artists,
+    albumImage: body.albumImage,
+    spotifyUrl: body.spotifyUrl,
+    playedBy: sanitizeText(body.playedBy, 80) || 'DJ',
+    source: sanitizeText(body.source, 40) || 'dj_manual',
+    playedAt: new Date().toISOString()
+  });
+
+  if (!track.trackName || !track.artists.length) {
+    return json({ error: 'Track name and artists are required' }, 400);
+  }
+
+  const nowPlaying = await setNowPlayingState(env, track);
+  return json({ ok: true, nowPlaying });
+}
+
+async function handleMarkDjPlaybackHistory(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON payload' }, 400);
+  }
+
+  const track = sanitizePlaybackTrackPayload({
+    trackId: body.trackId,
+    trackName: body.trackName,
+    artists: body.artists,
+    albumImage: body.albumImage,
+    spotifyUrl: body.spotifyUrl,
+    playedBy: sanitizeText(body.playedBy, 80) || 'DJ',
+    source: sanitizeText(body.source, 40) || 'dj_manual',
+    playedAt: new Date().toISOString()
+  });
+
+  if (!track.trackName || !track.artists.length) {
+    return json({ error: 'Track name and artists are required' }, 400);
+  }
+
+  await setNowPlayingState(env, track);
+  await appendPlaybackHistory(env, track);
+  return json({ ok: true });
 }
 
 function normalizeSoundCloudMatchText(value) {
@@ -2277,7 +2502,11 @@ async function runNightlyBenchmark(env, scheduledAt = new Date()) {
     return { skipped: true, reason: 'already_ran_today', runKey };
   }
 
-  const playlist = seededShuffle(NIGHTLY_BENCHMARK_SONG_POOL, runKey).slice(0, 12);
+  const shuffledPool = seededShuffle(NIGHTLY_BENCHMARK_SONG_POOL, runKey);
+  const goodSongs = shuffledPool.filter((song) => song.bucket === 'good').slice(0, 4);
+  const edgeSongs = shuffledPool.filter((song) => song.bucket === 'edge').slice(0, 4);
+  const badSongs = shuffledPool.filter((song) => song.bucket === 'bad').slice(0, 4);
+  const playlist = seededShuffle([...goodSongs, ...edgeSongs, ...badSongs], `${runKey}-mix`);
   const nowIso = new Date().toISOString();
 
   let insertedCount = 0;
@@ -2353,7 +2582,7 @@ async function runNightlyBenchmark(env, scheduledAt = new Date()) {
   await renumberActiveQueue(env);
 
   const cleanedCount = Number(cleanupResult.meta?.changes || 0);
-  const notes = `seed=${runKey}; inserted=${insertedCount}; cleaned=${cleanedCount}`;
+  const notes = `seed=${runKey}; inserted=${insertedCount}; cleaned=${cleanedCount}; buckets=good:${goodSongs.length},edge:${edgeSongs.length},bad:${badSongs.length}`;
   await env.DB.prepare(
     `INSERT INTO nightly_benchmark_runs
       (run_key, run_at, inserted_count, approved_count, pending_count, rejected_count, cleaned_count, notes)
@@ -2433,6 +2662,24 @@ export default {
         const unauthorized = requireAdmin(request, env);
         if (unauthorized) return withCors(unauthorized, corsHeaders);
         return withCors(await handleGetAdminAnalytics(env), corsHeaders);
+      }
+
+      if (request.method === 'GET' && routePath === '/api/admin/playback') {
+        const unauthorized = requireAdmin(request, env);
+        if (unauthorized) return withCors(unauthorized, corsHeaders);
+        return withCors(await handleGetDjPlayback(env, request), corsHeaders);
+      }
+
+      if (request.method === 'POST' && routePath === '/api/admin/playback/now-playing') {
+        const unauthorized = requireAdmin(request, env);
+        if (unauthorized) return withCors(unauthorized, corsHeaders);
+        return withCors(await handleSetDjNowPlaying(request, env), corsHeaders);
+      }
+
+      if (request.method === 'POST' && routePath === '/api/admin/playback/mark-played') {
+        const unauthorized = requireAdmin(request, env);
+        if (unauthorized) return withCors(unauthorized, corsHeaders);
+        return withCors(await handleMarkDjPlaybackHistory(request, env), corsHeaders);
       }
 
       if (request.method === 'GET' && routePath === '/api/admin/soundcloud/resolve') {

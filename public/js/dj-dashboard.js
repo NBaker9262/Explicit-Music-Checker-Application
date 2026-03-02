@@ -15,6 +15,12 @@ const clearFlaggedBtn = document.getElementById('clearFlaggedBtn');
 const clearExplicitBtn = document.getElementById('clearExplicitBtn');
 const renumberBtn = document.getElementById('renumberBtn');
 const clearAllBtn = document.getElementById('clearAllBtn');
+const refreshPlaybackBtn = document.getElementById('refreshPlaybackBtn');
+const playbackStatus = document.getElementById('playbackStatus');
+const nowPlayingTitle = document.getElementById('nowPlayingTitle');
+const nowPlayingMeta = document.getElementById('nowPlayingMeta');
+const nowPlayingBy = document.getElementById('nowPlayingBy');
+const playbackHistoryList = document.getElementById('playbackHistoryList');
 const djQuickAddStatus = document.getElementById('djQuickAddStatus');
 const djQuickAddInput = document.getElementById('djQuickAddInput');
 const djQuickAddSearchBtn = document.getElementById('djQuickAddSearchBtn');
@@ -108,6 +114,12 @@ function setQuickAddStatus(message, isError = false) {
   djQuickAddStatus.className = `status-message${isError ? ' error' : ''}`;
 }
 
+function setPlaybackStatus(message, isError = false) {
+  if (!playbackStatus) return;
+  playbackStatus.textContent = message;
+  playbackStatus.className = `status-message${isError ? ' error' : ''}`;
+}
+
 function formatDurationMs(value) {
   const totalSeconds = Math.max(0, Math.floor((Number(value) || 0) / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -116,6 +128,92 @@ function formatDurationMs(value) {
 
   if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function formatDateTime(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '-';
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) return '-';
+  return new Date(parsed).toLocaleString();
+}
+
+function renderPlaybackSnapshot(snapshot) {
+  const nowPlaying = snapshot?.nowPlaying || null;
+  const history = Array.isArray(snapshot?.history) ? snapshot.history : [];
+
+  if (nowPlaying && nowPlaying.trackName) {
+    if (nowPlayingTitle) nowPlayingTitle.textContent = nowPlaying.trackName;
+    if (nowPlayingMeta) nowPlayingMeta.textContent = (nowPlaying.artists || []).join(', ') || '-';
+    if (nowPlayingBy) nowPlayingBy.textContent = `Played by: ${nowPlaying.playedBy || '-'} at ${formatDateTime(nowPlaying.playedAt)}`;
+  } else {
+    if (nowPlayingTitle) nowPlayingTitle.textContent = 'No track active';
+    if (nowPlayingMeta) nowPlayingMeta.textContent = 'Start playback from queue to persist now-playing state.';
+    if (nowPlayingBy) nowPlayingBy.textContent = 'Played by: -';
+  }
+
+  if (!playbackHistoryList) return;
+  playbackHistoryList.innerHTML = '';
+  if (!history.length) {
+    playbackHistoryList.innerHTML = '<p class="empty-state">No playback history yet.</p>';
+    return;
+  }
+
+  history.forEach((entry) => {
+    const row = document.createElement('article');
+    row.className = 'queue-card';
+    row.innerHTML = `
+      <div class="queue-main">
+        <img src="${escapeHtml(safeImageUrl(entry.albumImage))}" alt="Album art for ${escapeHtml(entry.trackName)}">
+        <div>
+          <h3>${escapeHtml(entry.trackName)}</h3>
+          <p>${escapeHtml((entry.artists || []).join(', ') || '-')}</p>
+          <p>Played by ${escapeHtml(entry.playedBy || '-')} at ${escapeHtml(formatDateTime(entry.playedAt))}</p>
+        </div>
+      </div>
+    `;
+    playbackHistoryList.appendChild(row);
+  });
+}
+
+async function loadPlaybackSnapshot({ silent = false } = {}) {
+  if (!silent) setPlaybackStatus('Loading playback state...');
+  try {
+    const response = await window.djAuth.adminFetch('/api/dj/playback?limit=20');
+    const payload = await response.json();
+    if (response.status === 401) {
+      window.djAuth.clearAdminToken();
+      window.location.href = '/dj/login.html';
+      return;
+    }
+    if (!response.ok) throw new Error(payload.error || 'Unable to load playback state');
+    renderPlaybackSnapshot(payload);
+    if (!silent) setPlaybackStatus('Playback state loaded.');
+  } catch (error) {
+    if (!silent) setPlaybackStatus(error.message || 'Unable to load playback state.', true);
+  }
+}
+
+async function persistNowPlayingFromTrack(track, { source = 'dj_manual' } = {}) {
+  if (!track || !track.trackName || !Array.isArray(track.artists) || !track.artists.length) return;
+  try {
+    await window.djAuth.adminFetch('/api/dj/playback/now-playing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        trackId: track.trackId || track.id || '',
+        trackName: track.trackName || track.name || '',
+        artists: track.artists || [],
+        albumImage: track.albumImage || '',
+        spotifyUrl: track.spotifyUrl || '',
+        playedBy: djSession.username || 'DJ',
+        source
+      })
+    });
+    await loadPlaybackSnapshot({ silent: true });
+  } catch {
+    // no-op for best-effort UI sync
+  }
 }
 
 function getQueueHead() {
@@ -312,6 +410,7 @@ function createSongMeta(item) {
 function getActionButtons(item) {
   if (item.status === 'approved') {
     return `
+      <button class="btn btn-primary" type="button" data-action="pin">Pin Next</button>
       <button class="btn" type="button" data-action="flagged">Flag</button>
       <button class="btn btn-danger" type="button" data-action="deny">Mark Explicit</button>
     `;
@@ -319,6 +418,7 @@ function getActionButtons(item) {
 
   if (item.status === 'pending') {
     return `
+      <button class="btn btn-primary" type="button" data-action="pin">Pin Next</button>
       <button class="btn btn-primary" type="button" data-action="approve">Move To Queue</button>
       <button class="btn btn-danger" type="button" data-action="deny">Mark Explicit</button>
     `;
@@ -363,10 +463,23 @@ async function moveDraggedItem(targetStatus, beforeId = null) {
   animateDroppedRow(dragItemId);
 }
 
+async function pinTrack(itemId) {
+  setStatus('Pinning track to top...');
+  try {
+    const payload = await callControlAction('pin_track', { itemId });
+    if (!payload) return;
+    setStatus('Track pinned to top.');
+    await loadQueue({ silent: true });
+  } catch (error) {
+    setStatus(error.message || 'Unable to pin track.', true);
+  }
+}
+
 function attachRowEvents(row, item) {
   const approveBtn = row.querySelector('[data-action="approve"]');
   const flaggedBtn = row.querySelector('[data-action="flagged"]');
   const denyBtn = row.querySelector('[data-action="deny"]');
+  const pinBtn = row.querySelector('[data-action="pin"]');
 
   if (approveBtn) {
     approveBtn.addEventListener('click', () => {
@@ -381,6 +494,11 @@ function attachRowEvents(row, item) {
   if (denyBtn) {
     denyBtn.addEventListener('click', () => {
       updateStatus(item.id, 'rejected', 'explicit_lyrics').catch(() => {});
+    });
+  }
+  if (pinBtn) {
+    pinBtn.addEventListener('click', () => {
+      pinTrack(item.id).catch(() => {});
     });
   }
 
@@ -828,6 +946,13 @@ async function loadSoundCloudForQueueItem(queueItem, { autoPlay = true } = {}) {
     soundCloudState.positionMs = 0;
 
     renderSoundCloudTrackUi(queueItem, payload.match || null);
+    await persistNowPlayingFromTrack({
+      trackId: queueItem.trackId,
+      trackName: queueItem.trackName,
+      artists: queueItem.artists || [],
+      albumImage: queueItem.albumImage || '',
+      spotifyUrl: queueItem.spotifyUrl || ''
+    }, { source: 'soundcloud_resolve' });
 
     const widget = window.SC.Widget(soundCloudPlayerFrame);
     soundCloudState.widget = widget;
@@ -889,6 +1014,13 @@ async function loadManualSoundCloudUrl() {
   bindSoundCloudWidgetEvents(widget, queueItem, loadToken);
   widget.play();
   setSoundCloudStatus('Loading manual SoundCloud URL...');
+  await persistNowPlayingFromTrack({
+    trackId: '',
+    trackName: 'Manual SoundCloud Track',
+    artists: ['Manual URL'],
+    albumImage: '',
+    spotifyUrl: permalink
+  }, { source: 'soundcloud_manual' });
 }
 
 async function startSoundCloudQueuePlayback() {
@@ -932,11 +1064,15 @@ async function restartSoundCloudTrack() {
   soundCloudState.widget.play();
 }
 
-async function callControlAction(action) {
+async function callControlAction(action, extraPayload = {}) {
   const response = await window.djAuth.adminFetch('/api/dj/control', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action })
+    body: JSON.stringify({
+      action,
+      playedBy: djSession.username || 'DJ',
+      ...extraPayload
+    })
   });
   const payload = await response.json();
 
@@ -960,6 +1096,7 @@ async function advanceSoundCloudQueue() {
 
   try {
     await callControlAction('play_next_approved');
+    await loadPlaybackSnapshot({ silent: true });
     await loadQueue({ silent: true });
 
     const head = getQueueHead();
@@ -1074,6 +1211,7 @@ async function runControl(action, successLabel) {
 
     setControlStatus(`${successLabel} (${payload.updatedCount || 0} updated).`);
     await loadQueue();
+    await loadPlaybackSnapshot({ silent: true });
   } catch (error) {
     setControlStatus(error.message || 'Control action failed.', true);
   }
@@ -1087,6 +1225,7 @@ clearFlaggedBtn.addEventListener('click', () => runControl('clear_pending', 'Fla
 clearExplicitBtn.addEventListener('click', () => runControl('clear_denied', 'Explicit queue cleared'));
 renumberBtn.addEventListener('click', () => runControl('renumber_active', 'Queue order fixed'));
 clearAllBtn.addEventListener('click', () => runControl('clear_all', 'Entire queue cleared'));
+refreshPlaybackBtn?.addEventListener('click', () => loadPlaybackSnapshot());
 djQuickAddSearchBtn?.addEventListener('click', searchQuickAddSongs);
 djQuickAddInput?.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter') return;
@@ -1170,6 +1309,8 @@ enableListDrop(explicitQueueList, 'rejected');
   updatePlayPauseButton();
   updateProgressUi();
   await loadQueue();
+  await loadPlaybackSnapshot();
   setSoundCloudStatus('Ready. Click "Start Queue Playback" to begin SoundCloud playback.');
   setInterval(() => loadQueue({ silent: true }), 8000);
+  setInterval(() => loadPlaybackSnapshot({ silent: true }), 12000);
 })();
