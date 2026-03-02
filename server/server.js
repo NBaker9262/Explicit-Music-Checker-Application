@@ -8,7 +8,7 @@ const spotifyRoutes = require('./spotify');
 const app = express();
 
 const ALLOWED_STATUSES = ['pending', 'approved', 'rejected'];
-const ALLOWED_ROLES = ['guest', 'student', 'staff', 'organizer', 'admin'];
+const ALLOWED_ROLES = ['guest', 'student', 'staff', 'organizer', 'dj', 'admin'];
 const ALLOWED_CONFIDENCE = ['clean', 'explicit', 'unknown'];
 const ALLOWED_DANCE_MOMENTS = ['anytime', 'grand_entrance', 'warmup', 'peak_hour', 'slow_dance', 'last_dance'];
 const ALLOWED_VIBE_TAGS = ['throwback', 'hiphop', 'pop', 'latin', 'afrobeats', 'country', 'rnb', 'edm', 'line_dance', 'singalong'];
@@ -23,7 +23,7 @@ const MODERATION_PRESETS = [
   'other'
 ];
 
-const ROLE_WEIGHTS = { guest: 4, student: 8, staff: 14, organizer: 22, admin: 30 };
+const ROLE_WEIGHTS = { guest: 4, student: 8, staff: 14, organizer: 22, dj: 30, admin: 30 };
 const MOMENT_WEIGHTS = { anytime: 3, grand_entrance: 14, warmup: 6, peak_hour: 18, slow_dance: 8, last_dance: 20 };
 const MODERATION_TERMS = ['explicit', 'uncensored', 'dirty', 'parental advisory', 'violence', 'gun', 'drug', 'sex'];
 const DEFAULT_SAFE_TRACK_EXCEPTIONS = ['titanium'];
@@ -582,7 +582,6 @@ function checkAndConsumeRateLimitLocal(ipAddress) {
 
 function normalizeRole(role) {
   const normalized = sanitizeText(role, 20).toLowerCase();
-  if (normalized === 'dj') return 'admin';
   return ALLOWED_ROLES.includes(normalized) ? normalized : 'guest';
 }
 
