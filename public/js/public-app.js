@@ -668,7 +668,11 @@ async function submitRequest(event) {
     }
     if (!djMode && payload.nextAllowedAt) setCooldown(payload.nextAllowedAt);
     resetToDefaultPage();
-    setSearchStatus(`Request sent for "${selectedTrackLabel || payload.trackName || 'selected song'}".`);
+    const statusTrackLabel = selectedTrackLabel || payload.trackName || 'selected song';
+    const filterLine = String(payload.filterSummary || '').trim();
+    setSearchStatus(filterLine
+      ? `Request sent for "${statusTrackLabel}". ${filterLine}`
+      : `Request sent for "${statusTrackLabel}".`);
     if (!djMode) {
       showRateLimitModal('Request received. You can submit another song after 10 minutes.');
     }

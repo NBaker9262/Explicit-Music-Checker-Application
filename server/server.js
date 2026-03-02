@@ -37,6 +37,16 @@ const MODERATION_REASON_SUMMARY = {
   policy_violation: 'Blocked: school policy risk (drugs/alcohol/unsafe themes).',
   other: 'Blocked: marked unsafe by DJ moderation.'
 };
+const MODERATION_REASON_LABELS = {
+  clean_version_verified: 'Clean exception match',
+  duplicate_request_merged: 'Duplicate merged',
+  explicit_lyrics: 'Explicit lyrics',
+  violence: 'Violence risk',
+  hate_speech: 'Hate speech risk',
+  sexual_content: 'Sexual content risk',
+  policy_violation: 'Policy risk',
+  other: 'DJ safety decision'
+};
 const REQUEST_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const SOUND_CLOUD_TRACKS_BASE_URL = 'https://api.soundcloud.com/tracks';
 const SOUND_CLOUD_SEARCH_V2_URL = 'https://api-v2.soundcloud.com/search/tracks';
@@ -669,7 +679,7 @@ function buildFilterSummary({ status, moderationReason, reviewNote, contentConfi
     if (/openai fallback unavailable/i.test(note)) {
       return 'Review: automated safety check was incomplete, waiting for DJ review.';
     }
-    return 'Review: possible policy risk, waiting for DJ decision.';
+    return 'Flagged for DJ review before queue placement.';
   }
 
   if (reason && MODERATION_REASON_SUMMARY[reason]) return MODERATION_REASON_SUMMARY[reason];
@@ -678,6 +688,36 @@ function buildFilterSummary({ status, moderationReason, reviewNote, contentConfi
     return 'Blocked: lyrics/themes do not meet school-safe rules.';
   }
   return 'Blocked: failed school-safe moderation.';
+}
+
+function buildFilterExplanation({ status, moderationReason, reviewNote, contentConfidence }) {
+  const normalizedStatus = normalizeStatus(status) || 'pending';
+  const reason = sanitizeText(moderationReason || '', 64).toLowerCase();
+  const note = sanitizeText(reviewNote || '', 500);
+  const confidence = deriveContentConfidence(contentConfidence);
+
+  const reasonLabel = reason && MODERATION_REASON_LABELS[reason]
+    ? MODERATION_REASON_LABELS[reason]
+    : normalizedStatus === 'approved'
+      ? 'Approved'
+      : normalizedStatus === 'pending'
+        ? 'Needs DJ review'
+        : 'Blocked';
+
+  const detail = [];
+  if (confidence === 'clean') detail.push('Spotify explicit flag: clean');
+  if (confidence === 'explicit') detail.push('Spotify explicit flag: explicit');
+  if (confidence === 'unknown') detail.push('Spotify explicit flag: unknown');
+
+  note.split('|').map((part) => sanitizeText(part, 180)).filter(Boolean).slice(0, 6).forEach((entry) => {
+    detail.push(entry);
+  });
+
+  return {
+    reasonLabel,
+    detail: detail.join(' | '),
+    moderationReasonCode: reason || ''
+  };
 }
 
 function normalizeModerationLearningKeyPart(value) {
@@ -832,7 +872,7 @@ function getAutoModerationDecision({ trackName, artists, contentConfidence }) {
     };
   }
 
-  if (confidence === 'explicit' || moderationScore < (strictSchoolMode ? 46 : 40)) {
+  if (confidence === 'explicit' || moderationScore < (strictSchoolMode ? 40 : 34)) {
     return {
       status: 'rejected',
       moderationReason: confidence === 'explicit' ? 'explicit_lyrics' : 'policy_violation',
@@ -842,7 +882,7 @@ function getAutoModerationDecision({ trackName, artists, contentConfidence }) {
     };
   }
 
-  if (confidence === 'clean' && moderationScore >= (strictSchoolMode ? 82 : 70)) {
+  if (confidence === 'clean' && moderationScore >= (strictSchoolMode ? 84 : 72)) {
     return {
       status: 'approved',
       moderationReason: '',
@@ -1278,6 +1318,12 @@ function normalizeQueueItem(item) {
     });
 
   const parsedSetOrder = parseSetOrder(item.setOrder);
+  const filterExplanation = buildFilterExplanation({
+    status: normalizedStatus,
+    moderationReason,
+    reviewNote,
+    contentConfidence
+  });
 
   return {
     ...item,
@@ -1299,7 +1345,10 @@ function normalizeQueueItem(item) {
       moderationReason,
       reviewNote,
       contentConfidence
-    })
+    }),
+    filterReasonLabel: filterExplanation.reasonLabel,
+    filterReasonDetail: filterExplanation.detail,
+    moderationReasonCode: filterExplanation.moderationReasonCode
   };
 }
 
@@ -1788,6 +1837,28 @@ app.patch(['/api/admin/queue/:id', '/api/dj/queue/:id', '/api/queue/:id'], (req,
   renumberActiveQueueLocal();
 
   return res.json(normalizeQueueItem(item));
+});
+
+app.delete(['/api/admin/queue/:id', '/api/dj/queue/:id', '/api/queue/:id'], (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const itemId = Number(req.params.id);
+  if (!Number.isInteger(itemId) || itemId <= 0) {
+    return res.status(400).json({ error: 'Invalid queue item id' });
+  }
+
+  const index = queue.findIndex((entry) => entry.id === itemId);
+  if (index < 0) return res.status(404).json({ error: 'Queue item not found' });
+
+  const [deleted] = queue.splice(index, 1);
+  renumberActiveQueueLocal();
+
+  return res.json({
+    ok: true,
+    deletedId: itemId,
+    trackName: sanitizeText(deleted.trackName || '', 200),
+    status: normalizeStatus(deleted.status) || 'pending'
+  });
 });
 
 app.post(['/api/admin/bulk', '/api/dj/bulk'], (req, res) => {

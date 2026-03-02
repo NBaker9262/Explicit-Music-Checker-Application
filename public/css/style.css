@@ -672,6 +672,10 @@ select:focus {
     box-shadow: 0 14px 30px rgba(0, 18, 41, 0.25);
 }
 
+.spotify-unified-player {
+    gap: 12px;
+}
+
 .player-main {
     display: grid;
     grid-template-columns: 72px minmax(0, 1fr);
@@ -706,6 +710,49 @@ select:focus {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
     gap: 8px;
+}
+
+.spotify-icon-controls {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.icon-player-btn {
+    min-height: 46px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    background: rgba(255, 255, 255, 0.1);
+    color: #ffffff;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+    font-weight: 700;
+    transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.icon-player-btn:hover {
+    transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.42);
+    text-decoration: none;
+}
+
+.icon-player-btn-primary {
+    background: #1db954;
+    border-color: #1db954;
+}
+
+.icon-player-btn-primary:hover {
+    background: #18a84b;
+    border-color: #18a84b;
+}
+
+.icon-player-btn.is-active {
+    background: rgba(29, 185, 84, 0.24);
+    border-color: #1db954;
 }
 
 .player-progress {
@@ -775,6 +822,7 @@ select:focus {
     border-radius: 12px;
     border: 1px solid #dbe3f0;
     background: linear-gradient(180deg, #ffffff, #f9fbff);
+    box-shadow: 0 8px 16px rgba(3, 26, 56, 0.04);
 }
 
 .queue-row-main {
@@ -791,6 +839,35 @@ select:focus {
     gap: 8px;
     align-items: center;
     justify-content: flex-end;
+}
+
+.icon-queue-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    border: 1px solid #cdd9ea;
+    background: #f4f7fd;
+    color: #173b6f;
+    cursor: pointer;
+    font-size: 1.05rem;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.icon-queue-btn:hover {
+    background: #e8effa;
+}
+
+.icon-queue-approve {
+    color: #0a6a34;
+    border-color: #9dd8b5;
+    background: #e9f8ef;
+}
+
+.icon-queue-danger {
+    color: #8f1515;
+    border-color: #eab0b0;
+    background: #fff1f1;
 }
 
 .drag-label {
@@ -870,6 +947,30 @@ select:focus {
     margin: 2px 0 4px;
     font-size: 0.88rem;
     color: #173b6f;
+}
+
+.queue-reason-details {
+    margin-top: 6px;
+    border: 1px dashed #ced8e8;
+    border-radius: 8px;
+    padding: 7px 9px;
+    background: #f8fbff;
+}
+
+.queue-reason-details summary {
+    cursor: pointer;
+    color: #173b6f;
+    font-size: 0.87rem;
+    font-weight: 600;
+}
+
+.queue-reason-details p {
+    margin: 5px 0 0;
+    font-size: 0.84rem;
+}
+
+.queue-reason-code {
+    color: #5a6b82;
 }
 
 .pending-note {

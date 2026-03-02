@@ -62,7 +62,8 @@ function mapTrack(track) {
     explicit: typeof track.explicit === 'boolean' ? track.explicit : null,
     confidence: deriveContentConfidence(track.explicit),
     previewUrl: track.preview_url || '',
-    spotifyUrl: track.external_urls?.spotify || ''
+    spotifyUrl: track.external_urls?.spotify || '',
+    durationMs: Math.max(0, Number(track.duration_ms) || 0)
   };
 }
 
@@ -207,6 +208,7 @@ router.get('/album/:id/tracks', async (req, res) => {
           confidence: deriveContentConfidence(track.explicit),
           previewUrl: track.preview_url || '',
           spotifyUrl: track.external_urls?.spotify || '',
+          durationMs: Math.max(0, Number(track.duration_ms) || 0),
           trackNumber: Number(track.track_number || 0)
         });
       });

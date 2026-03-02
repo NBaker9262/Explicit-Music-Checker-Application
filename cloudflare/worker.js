@@ -16,7 +16,7 @@ function buildCorsHeaders(request, rawAllowedOrigin) {
 
   return {
     'Access-Control-Allow-Origin': origin,
-    'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     Vary: 'Origin'
   };
@@ -66,7 +66,7 @@ const SOUND_CLOUD_OAUTH_TOKEN_URL = 'https://secure.soundcloud.com/oauth/token';
 const SOUND_CLOUD_OAUTH_TOKEN_FALLBACK_URL = 'https://api.soundcloud.com/oauth2/token';
 const SOUND_CLOUD_PUBLIC_SEARCH_PAGE_URL = 'https://soundcloud.com/search/sounds';
 const LYRICS_MODERATION_HINT_TERMS = {
-  suggestive: ['sex', 'sexy', 'kiss', 'touch', 'bed', 'naked', 'body', 'freak', 'hook up', 'make love', 'twerk'],
+  suggestive: ['sex', 'sexy', 'bed', 'naked', 'freak', 'hook up', 'make love', 'twerk'],
   alcohol: ['alcohol', 'drink', 'drunk', 'whiskey', 'vodka', 'tequila', 'beer', 'wine', 'shots', 'bar', 'bottle', 'liquor'],
   drugs: ['drug', 'drugs', 'weed', 'marijuana', 'cocaine', 'crack', 'meth', 'heroin', 'xanax', 'molly', 'ecstasy', 'lean', 'pills'],
   violence: ['gun', 'guns', 'shoot', 'murder', 'kill', 'blood', 'knife', 'fight', 'dead', 'die']
@@ -82,6 +82,17 @@ const MODERATION_REASON_SUMMARY = {
   sexual_content: 'Blocked: sexual content/themes detected.',
   policy_violation: 'Blocked: school policy risk (drugs/alcohol/unsafe themes).',
   other: 'Blocked: marked unsafe by DJ moderation.'
+};
+
+const MODERATION_REASON_LABELS = {
+  clean_version_verified: 'Clean exception match',
+  duplicate_request_merged: 'Duplicate merged',
+  explicit_lyrics: 'Explicit lyrics',
+  violence: 'Violence risk',
+  hate_speech: 'Hate speech risk',
+  sexual_content: 'Sexual content risk',
+  policy_violation: 'Policy risk',
+  other: 'DJ safety decision'
 };
 const NIGHTLY_BENCHMARK_SONG_POOL = [
   { name: 'Titanium', artist: 'David Guetta', explicit: false, bucket: 'good' },
@@ -363,7 +374,7 @@ function buildFilterSummary({ status, moderationReason, reviewNote, contentConfi
     if (/openai fallback unavailable/i.test(note)) {
       return 'Review: automated safety check was incomplete, waiting for DJ review.';
     }
-    return 'Review: possible policy risk, waiting for DJ decision.';
+    return 'Flagged for DJ review before queue placement.';
   }
 
   if (reason && MODERATION_REASON_SUMMARY[reason]) return MODERATION_REASON_SUMMARY[reason];
@@ -372,6 +383,36 @@ function buildFilterSummary({ status, moderationReason, reviewNote, contentConfi
     return 'Blocked: lyrics/themes do not meet school-safe rules.';
   }
   return 'Blocked: failed school-safe moderation.';
+}
+
+function buildFilterExplanation({ status, moderationReason, reviewNote, contentConfidence }) {
+  const normalizedStatus = normalizeStatus(status) || 'pending';
+  const reason = sanitizeText(moderationReason || '', 64).toLowerCase();
+  const note = sanitizeText(reviewNote || '', 500);
+  const confidence = deriveContentConfidence(contentConfidence);
+
+  const reasonLabel = reason && MODERATION_REASON_LABELS[reason]
+    ? MODERATION_REASON_LABELS[reason]
+    : normalizedStatus === 'approved'
+      ? 'Approved'
+      : normalizedStatus === 'pending'
+        ? 'Needs DJ review'
+        : 'Blocked';
+
+  const detail = [];
+  if (confidence === 'clean') detail.push('Spotify explicit flag: clean');
+  if (confidence === 'explicit') detail.push('Spotify explicit flag: explicit');
+  if (confidence === 'unknown') detail.push('Spotify explicit flag: unknown');
+
+  note.split('|').map((part) => sanitizeText(part, 180)).filter(Boolean).slice(0, 6).forEach((entry) => {
+    detail.push(entry);
+  });
+
+  return {
+    reasonLabel,
+    detail: detail.join(' | '),
+    moderationReasonCode: reason || ''
+  };
 }
 
 async function ensureModerationLearningTable(env) {
@@ -809,15 +850,21 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
       && !lyricsAnalysis.openAiFlagged
   );
   const strongProfanitySignal = strictSchoolMode
-    ? (Number(lyricsAnalysis.profanityHits) || 0) >= 2
-    : (Number(lyricsAnalysis.profanityHits) || 0) >= 5;
+    ? (Number(lyricsAnalysis.profanityHits) || 0) >= 3
+    : (Number(lyricsAnalysis.profanityHits) || 0) >= 6;
   const rejectScoreThreshold = strictSchoolMode
-    ? (openAiBackstopMissing ? 26 : 34)
-    : (openAiBackstopMissing ? 22 : 32);
-  const highSeverityThemeSignal = (lyricsAnalysis.drugHits > 0)
-    || (lyricsAnalysis.alcoholHits >= 2)
-    || (lyricsAnalysis.suggestiveHits >= 3)
+    ? (openAiBackstopMissing ? 22 : 30)
+    : (openAiBackstopMissing ? 18 : 26);
+  const highSeverityThemeSignal = (lyricsAnalysis.drugHits >= 2)
+    || (lyricsAnalysis.alcoholHits >= 4)
+    || (lyricsAnalysis.suggestiveHits >= 6)
     || (lyricsAnalysis.violenceHits >= 3);
+  const severeRiskSignal = Boolean(
+    lyricsAnalysis.openAiFlagged
+    || strongProfanitySignal
+    || lyricsAnalysis.drugHits >= 2
+    || lyricsAnalysis.violenceHits >= 2
+  );
 
   if (blockedByTrackList) {
     return {
@@ -847,7 +894,7 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
 
   if (
     confidence === 'explicit'
-    || lyricsAnalysis.riskLevel === 'high'
+    || severeRiskSignal
     || strongProfanitySignal
     || combinedScore < rejectScoreThreshold
     || (strictSchoolMode && highSeverityThemeSignal)
@@ -1114,6 +1161,12 @@ function normalizeRequestRow(row) {
     : calculatePriorityScore({ voteCount, requesterRoles, eventDate: row.event_date, contentConfidence, danceMoment, energyLevel });
 
   const parsedSetOrder = parseSetOrder(row.set_order);
+  const filterExplanation = buildFilterExplanation({
+    status: normalizedStatus,
+    moderationReason,
+    reviewNote,
+    contentConfidence
+  });
 
   return {
     id: row.id,
@@ -1146,6 +1199,9 @@ function normalizeRequestRow(row) {
       reviewNote,
       contentConfidence
     }),
+    filterReasonLabel: filterExplanation.reasonLabel,
+    filterReasonDetail: filterExplanation.detail,
+    moderationReasonCode: filterExplanation.moderationReasonCode,
     djNotes: row.dj_notes || '',
     setOrder: parsedSetOrder.valid ? parsedSetOrder.value : null,
     submittedAt: row.submitted_at,
@@ -2013,6 +2069,24 @@ async function handleAdminUpdateQueue(request, env, rawId) {
   return json(normalizeRequestRow(updated));
 }
 
+async function handleAdminDeleteQueueItem(env, rawId) {
+  const itemId = Number(rawId);
+  if (!Number.isInteger(itemId) || itemId <= 0) return json({ error: 'Invalid queue item id' }, 400);
+
+  const existing = await env.DB.prepare('SELECT * FROM requests WHERE id = ?').bind(itemId).first();
+  if (!existing) return json({ error: 'Queue item not found' }, 404);
+
+  await env.DB.prepare('DELETE FROM requests WHERE id = ?').bind(itemId).run();
+  await renumberActiveQueue(env);
+
+  return json({
+    ok: true,
+    deletedId: itemId,
+    trackName: sanitizeText(existing.track_name || '', 200),
+    status: normalizeStatus(existing.status) || 'pending'
+  });
+}
+
 async function handleAdminBulkAction(request, env) {
   let body;
   try {
@@ -2696,7 +2770,8 @@ async function handleSpotifySearch(request, env) {
     explicit: typeof track.explicit === 'boolean' ? track.explicit : null,
     confidence: deriveContentConfidence(track.explicit),
     spotifyUrl: track.external_urls?.spotify || '',
-    previewUrl: track.preview_url || ''
+    previewUrl: track.preview_url || '',
+    durationMs: Math.max(0, Number(track.duration_ms) || 0)
   }));
 
   const albums = (searchData.albums?.items || []).map((album) => ({
@@ -2805,6 +2880,7 @@ async function handleSpotifyAlbumTracks(request, env, rawAlbumId) {
         confidence: deriveContentConfidence(track.explicit),
         spotifyUrl: track.external_urls?.spotify || '',
         previewUrl: track.preview_url || '',
+        durationMs: Math.max(0, Number(track.duration_ms) || 0),
         trackNumber: Number(track.track_number || 0)
       });
     });
@@ -3051,6 +3127,13 @@ export default {
         return withCors(await handleAdminUpdateQueue(request, env, id), corsHeaders);
       }
 
+      if (request.method === 'DELETE' && routePath.startsWith('/api/admin/queue/')) {
+        const unauthorized = requireAdmin(request, env);
+        if (unauthorized) return withCors(unauthorized, corsHeaders);
+        const id = routePath.split('/').pop();
+        return withCors(await handleAdminDeleteQueueItem(env, id), corsHeaders);
+      }
+
       if (request.method === 'POST' && routePath === '/api/admin/bulk') {
         const unauthorized = requireAdmin(request, env);
         if (unauthorized) return withCors(unauthorized, corsHeaders);
@@ -3146,6 +3229,13 @@ export default {
         if (unauthorized) return withCors(unauthorized, corsHeaders);
         const id = url.pathname.split('/').pop();
         return withCors(await handleAdminUpdateQueue(request, env, id), corsHeaders);
+      }
+
+      if (request.method === 'DELETE' && url.pathname.startsWith('/api/queue/')) {
+        const unauthorized = requireAdmin(request, env);
+        if (unauthorized) return withCors(unauthorized, corsHeaders);
+        const id = url.pathname.split('/').pop();
+        return withCors(await handleAdminDeleteQueueItem(env, id), corsHeaders);
       }
 
       if (request.method === 'GET' && url.pathname === '/api/analytics') {
