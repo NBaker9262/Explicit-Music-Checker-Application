@@ -10,3 +10,6 @@ binding = "DB"
 database_name = "music-queue"
 database_id = "e1c3bcef-caaf-40a7-8cde-6927e92bcbfa"
 migrations_dir = "cloudflare/migrations"
+
+[triggers]
+crons = ["0 * * * *"]

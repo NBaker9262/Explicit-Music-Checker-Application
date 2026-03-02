@@ -1,1 +1,1 @@
-window.location.href = '/admin/login.html';
+window.location.href = '/dj/login.html';

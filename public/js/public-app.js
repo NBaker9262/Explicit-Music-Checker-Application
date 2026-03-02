@@ -6,6 +6,13 @@ const loadMoreBtn = document.getElementById('loadMoreBtn');
 const albumViewBar = document.getElementById('albumViewBar');
 const albumBackBtn = document.getElementById('albumBackBtn');
 const albumViewTitle = document.getElementById('albumViewTitle');
+const requesterIdentityChip = document.getElementById('requesterIdentityChip');
+const changeRequesterNameBtn = document.getElementById('changeRequesterNameBtn');
+const requesterIdentityEditor = document.getElementById('requesterIdentityEditor');
+const requesterIdentityInput = document.getElementById('requesterIdentityInput');
+const saveRequesterNameBtn = document.getElementById('saveRequesterNameBtn');
+const cancelRequesterNameBtn = document.getElementById('cancelRequesterNameBtn');
+const requesterIdentityStatus = document.getElementById('requesterIdentityStatus');
 
 const requestOverlay = document.getElementById('requestOverlay');
 const closeRequestOverlayBtn = document.getElementById('closeRequestOverlayBtn');
@@ -26,6 +33,7 @@ let cooldownTimer = null;
 let searchPageToken = 0;
 
 const REQUEST_COOLDOWN_KEY = 'request_cooldown_until';
+const REQUESTER_NAME_KEY = 'requester_name_v1';
 const SEARCH_PAGE_SIZE = 24;
 
 const searchState = {
@@ -74,6 +82,56 @@ function setRequestStatus(message, isError = false) {
 function setQueueStatus(message, isError = false) {
   queueStatus.textContent = message;
   queueStatus.className = `status-message${isError ? ' error' : ''}`;
+}
+
+function setRequesterIdentityStatus(message, isError = false) {
+  if (!requesterIdentityStatus) return;
+  requesterIdentityStatus.textContent = message;
+  requesterIdentityStatus.className = `status-message${isError ? ' error' : ''}`;
+}
+
+function normalizeRequesterName(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
+function getSavedRequesterName() {
+  try {
+    return normalizeRequesterName(localStorage.getItem(REQUESTER_NAME_KEY) || '');
+  } catch {
+    return '';
+  }
+}
+
+function saveRequesterName(name) {
+  const normalized = normalizeRequesterName(name);
+  if (!normalized) return '';
+  try {
+    localStorage.setItem(REQUESTER_NAME_KEY, normalized);
+    return normalized;
+  } catch {
+    return '';
+  }
+}
+
+function updateRequesterIdentityChip() {
+  if (!requesterIdentityChip) return;
+  const savedName = getSavedRequesterName();
+  requesterIdentityChip.textContent = savedName ? `Signed in as ${savedName}` : 'Not signed in';
+}
+
+function showRequesterIdentityEditor() {
+  if (!requesterIdentityEditor || !requesterIdentityInput) return;
+  requesterIdentityEditor.hidden = false;
+  requesterIdentityInput.value = getSavedRequesterName();
+  setRequesterIdentityStatus('');
+  requesterIdentityInput.focus();
+}
+
+function hideRequesterIdentityEditor() {
+  if (!requesterIdentityEditor || !requesterIdentityInput) return;
+  requesterIdentityEditor.hidden = true;
+  requesterIdentityInput.value = '';
+  setRequesterIdentityStatus('');
 }
 
 function parseIsoDateMs(value) {
@@ -191,15 +249,21 @@ function updateLoadMoreButton() {
 
 function openRequestOverlay() {
   if (!requestOverlay) return;
+  const savedName = getSavedRequesterName();
+  if (requesterNameInput && savedName) requesterNameInput.value = savedName;
   requestOverlay.hidden = false;
   document.body.classList.add('modal-open');
   requesterNameInput?.focus();
 }
 
-function closeRequestOverlay() {
-  selectedTrack = null;
-  renderSelectedTrack();
-  requestForm.reset();
+function closeRequestOverlay({ clearSelection = true } = {}) {
+  if (clearSelection) {
+    selectedTrack = null;
+    renderSelectedTrack();
+  }
+  if (requestForm) requestForm.reset();
+  const savedName = getSavedRequesterName();
+  if (requesterNameInput && savedName) requesterNameInput.value = savedName;
   setRequestStatus('');
   if (requestOverlay) requestOverlay.hidden = true;
   document.body.classList.remove('modal-open');
@@ -462,27 +526,8 @@ function backFromAlbumView() {
 }
 
 function resetToDefaultPage() {
-  selectedTrack = null;
-  renderSelectedTrack();
-  if (requestOverlay) requestOverlay.hidden = true;
-  document.body.classList.remove('modal-open');
-  requestForm.reset();
-  searchInput.value = '';
-  searchResults.innerHTML = '';
-  hideSuggestions();
-  hideAlbumViewBar();
+  closeRequestOverlay({ clearSelection: true });
   setRequestStatus('');
-  setSearchStatus('');
-
-  searchState.query = '';
-  searchState.type = 'all';
-  searchState.offset = 0;
-  searchState.hasMore = false;
-  searchState.loading = false;
-  searchState.totalLoaded = 0;
-  searchState.items = [];
-  searchState.view = 'search';
-  searchState.albumSnapshot = null;
   updateLoadMoreButton();
 }
 
@@ -534,12 +579,26 @@ async function submitRequest(event) {
       return;
     }
 
+    if (response.status === 409 && payload.code === 'duplicate_active') {
+      const trackName = String(payload?.existing?.trackName || selectedTrack?.name || 'this song');
+      const message = `"${trackName}" is already in queue/review and can't be requested again right now.`;
+      setRequestStatus(message, true);
+      showRateLimitModal(message);
+      return;
+    }
+
     if (!response.ok) throw new Error(payload.error || 'Request failed');
 
+    const savedName = saveRequesterName(requesterName);
+    if (savedName) {
+      updateRequesterIdentityChip();
+      if (requesterNameInput) requesterNameInput.value = savedName;
+    }
     if (payload.nextAllowedAt) setCooldown(payload.nextAllowedAt);
     resetToDefaultPage();
-    setSearchStatus('Request sent.');
+    setSearchStatus(`Request sent for "${selectedTrack?.name || payload.trackName || 'selected song'}".`);
     showRateLimitModal('Request received. You can submit another song after 10 minutes.');
+    searchInput?.focus();
     await loadLiveQueue();
   } catch (error) {
     setRequestStatus(error.message || 'Request failed.', true);
@@ -583,6 +642,23 @@ async function loadLiveQueue() {
   }
 }
 
+function saveRequesterIdentityFromEditor() {
+  if (!requesterIdentityInput) return;
+  const normalized = normalizeRequesterName(requesterIdentityInput.value);
+  if (!normalized) {
+    setRequesterIdentityStatus('Name is required.', true);
+    return;
+  }
+  const saved = saveRequesterName(normalized);
+  if (!saved) {
+    setRequesterIdentityStatus('Unable to save name on this browser.', true);
+    return;
+  }
+  if (requesterNameInput) requesterNameInput.value = saved;
+  updateRequesterIdentityChip();
+  hideRequesterIdentityEditor();
+}
+
 searchBtn.addEventListener('click', () => startSearch({ type: 'all' }));
 searchInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
@@ -592,6 +668,15 @@ searchInput.addEventListener('keydown', (event) => {
 });
 loadMoreBtn?.addEventListener('click', () => {
   loadSearchPage({ append: true });
+});
+changeRequesterNameBtn?.addEventListener('click', showRequesterIdentityEditor);
+saveRequesterNameBtn?.addEventListener('click', saveRequesterIdentityFromEditor);
+cancelRequesterNameBtn?.addEventListener('click', hideRequesterIdentityEditor);
+requesterIdentityInput?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    saveRequesterIdentityFromEditor();
+  }
 });
 
 albumBackBtn?.addEventListener('click', backFromAlbumView);
@@ -612,5 +697,7 @@ document.addEventListener('keydown', (event) => {
 
 loadLiveQueue();
 startCooldownTimer();
+updateRequesterIdentityChip();
+if (requesterNameInput && getSavedRequesterName()) requesterNameInput.value = getSavedRequesterName();
 updateLoadMoreButton();
 setInterval(loadLiveQueue, 8000);

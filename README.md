@@ -42,6 +42,7 @@ Send `Authorization: Basic <base64(username:password)>`
 - `POST /api/admin/reorder`
 - `POST /api/admin/control`
 - `GET /api/admin/analytics`
+- `GET /api/admin/soundcloud/resolve?trackName=...&artist=...`
 
 ## Current queue model
 
@@ -90,12 +91,15 @@ Notes:
    - `SPOTIFY_CLIENT_SECRET`
 3. (Optional) set OpenAI moderation key:
    - `OPENAI_API_KEY`
-4. Set admin credentials:
+4. (Optional) set SoundCloud credentials for admin playback:
+   - `SOUNDCLOUD_CLIENT_ID`
+   - `SOUNDCLOUD_CLIENT_SECRET`
+5. Set admin credentials:
    - `ADMIN_USERNAME`
    - `ADMIN_PASSWORD`
-5. Start server:
+6. Start server:
    - `npm start`
-6. Open:
+7. Open:
    - `http://localhost:3000`
 
 ## Cloudflare Worker + D1
@@ -116,16 +120,19 @@ Notes:
    - `npm run cf:secret:put -- SPOTIFY_CLIENT_SECRET`
 6. Set OpenAI moderation key:
    - `npm run cf:secret:put -- OPENAI_API_KEY`
-7. Set admin credentials:
+7. (Optional) set SoundCloud credentials for admin playback:
+   - `npm run cf:secret:put -- SOUNDCLOUD_CLIENT_ID`
+   - `npm run cf:secret:put -- SOUNDCLOUD_CLIENT_SECRET`
+8. Set admin credentials:
    - `npm run cf:secret:put -- ADMIN_USERNAME`
    - `npm run cf:secret:put -- ADMIN_PASSWORD`
-8. (Optional) disable lyrics moderation:
+9. (Optional) disable lyrics moderation:
    - `npm run cf:secret:put -- DISABLE_LYRICS_MODERATION`
    - enter `1` when prompted
-9. (Optional) manage secrets in bulk:
+10. (Optional) manage secrets in bulk:
    - copy `cloudflare/secrets.example.json` to a local untracked file (for example `cloudflare/secrets.json`)
    - run: `npm run cf:secret:bulk -- cloudflare/secrets.json`
-10. Deploy API:
+11. Deploy API:
    - `npm run cf:deploy`
 
 ## Wrangler command quick reference
@@ -145,10 +152,27 @@ Notes:
 
 `public/js/config.js` automatically uses:
 
-- local API when on localhost
-- `https://music-queue-api.noahmathmaster.workers.dev` in production
+- same-origin API for:
+  - `localhost` / `127.0.0.1`
+  - Codespaces forwarded hosts (`*.app.github.dev`, `*.githubpreview.dev`)
+  - `*.workers.dev`
+- dedicated API domain (`https://music-queue-api.noahmathmaster.workers.dev`) for other hosts such as `pages.dev`
 
-If your Worker URL changes, update `apiBaseUrl` in `public/js/config.js`.
+To force a custom API host, set `window.APP_CONFIG.apiBaseUrl` before loading `/js/config.js`.
+
+## SoundCloud admin playback setup
+
+1. Add SoundCloud credentials:
+   - local: set `SOUNDCLOUD_CLIENT_ID` and `SOUNDCLOUD_CLIENT_SECRET` in your shell
+   - Cloudflare:
+     - `npm run cf:secret:put -- SOUNDCLOUD_CLIENT_ID`
+     - `npm run cf:secret:put -- SOUNDCLOUD_CLIENT_SECRET`
+2. Open `/admin/dashboard.html` and use the **SoundCloud Playback** panel:
+   - `Start Queue Playback` loads queue head in SoundCloud player
+   - `Play/Pause`, `Restart`, and seek/volume controls behave like a normal player
+   - `Next In Queue` removes current queue head (`play_next_approved`) and loads the next approved track
+   - `Auto-advance` does the same automatically when a track finishes
+3. If SoundCloud cannot find a match, playback status shows the resolver error and queue moderation controls remain usable.
 
 ## Production notes
 

@@ -15,12 +15,25 @@
         <p class="hero-copy">Find a track and send it to the queue in seconds.</p>
       </div>
       <nav class="topbar-nav">
-        <a class="btn" href="/admin/login.html">Admin</a>
+        <a class="btn" href="/dj/login.html">DJ</a>
       </nav>
     </header>
 
     <section class="panel">
       <h2>Find Song</h2>
+      <div class="signin-row">
+        <p id="requesterIdentityChip" class="signin-chip" aria-live="polite">Not signed in</p>
+        <button id="changeRequesterNameBtn" class="btn" type="button">Change Name</button>
+      </div>
+      <div id="requesterIdentityEditor" class="requester-editor" hidden>
+        <label for="requesterIdentityInput">Your name</label>
+        <div class="requester-editor-row">
+          <input id="requesterIdentityInput" type="text" maxlength="80" placeholder="Enter your name">
+          <button id="saveRequesterNameBtn" class="btn btn-primary" type="button">Save</button>
+          <button id="cancelRequesterNameBtn" class="btn" type="button">Cancel</button>
+        </div>
+        <p id="requesterIdentityStatus" class="status-message" aria-live="polite"></p>
+      </div>
       <div class="search-row">
         <input type="text" id="searchInput" placeholder="Song title or artist" autocomplete="off">
         <button id="searchBtn" class="btn btn-primary" type="button">Search</button>
