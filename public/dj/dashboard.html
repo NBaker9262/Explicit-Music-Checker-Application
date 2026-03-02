@@ -3,170 +3,107 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Queue Control</title>
+<title>DJ Queue</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body class="app-bg">
-  <main class="page-shell">
-    <header class="topbar">
-      <div class="brand-head">
-        <div class="brand-mark">
-          <img src="/ALA-Defenders-Mascot-no_bg.png" alt="ALA Defenders logo" onerror="this.style.display='none'">
+  <main class="page-shell dj-page-shell">
+    <header class="dj-hero panel">
+      <div class="dj-hero-brand">
+        <div class="brand-mark dj-brand-mark">
+          <img src="/ALA-Defenders-Mascot.webp" alt="ALA Defenders logo" onerror="this.style.display='none'">
           <span>ALA</span>
         </div>
         <div>
-          <p class="eyebrow">DJ</p>
-          <h1>Queue Board</h1>
+          <p class="eyebrow">DJ Console</p>
+          <h1>Queue Manager</h1>
+          <p class="panel-subtitle">Approve, review, or block songs. Drag between lanes to reorder.</p>
         </div>
       </div>
-      <nav class="topbar-nav">
-        <a href="/">Public Page</a>
-        <button id="adminLogoutBtn" class="btn" type="button">Logout</button>
+      <nav class="topbar-nav dj-hero-nav">
+        <a class="btn" href="/">Public Page</a>
+        <button id="adminLogoutBtn" class="btn" type="button">Sign Out</button>
       </nav>
     </header>
 
-    <section class="panel">
+    <section class="panel dj-lanes-panel">
       <div class="panel-head">
-        <h2>Queue Board</h2>
-        <button id="refreshAdminBtn" class="btn" type="button">Refresh</button>
+        <h2>Queue Lanes</h2>
+        <div class="topbar-nav">
+          <button id="refreshAdminBtn" class="btn" type="button">Refresh</button>
+          <button id="playNextBtn" class="btn btn-primary" type="button">Play Next Queue Song</button>
+        </div>
       </div>
       <p id="adminStatusMessage" class="status-message" aria-live="polite"></p>
-
-      <div class="queue-section">
-        <h3>Queue</h3>
-        <p class="inline-hint">Drag to reorder live songs.</p>
-        <div id="approvedQueueList" class="queue-list"></div>
-      </div>
-
-      <div class="queue-section">
-        <h3>Flagged</h3>
-        <p class="inline-hint">Keeps place in line and is skipped.</p>
-        <div id="flaggedQueueList" class="queue-list"></div>
-      </div>
-
-      <div class="queue-section">
-        <h3>Explicit</h3>
-        <p class="inline-hint">Recorded only and never played.</p>
-        <div id="explicitQueueList" class="queue-list"></div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2>Controls</h2>
       <p id="adminControlStatus" class="status-message" aria-live="polite"></p>
-      <div class="controls-grid">
-        <button id="playNextBtn" class="btn btn-primary" type="button">Play Next</button>
-        <button id="clearApprovedBtn" class="btn" type="button">Clear Queue</button>
-        <button id="clearFlaggedBtn" class="btn" type="button">Clear Flagged</button>
-        <button id="clearExplicitBtn" class="btn" type="button">Clear Explicit</button>
-        <button id="renumberBtn" class="btn" type="button">Reorder</button>
-        <button id="clearAllBtn" class="btn btn-danger" type="button">Clear All</button>
+
+      <div class="dj-lanes-grid">
+        <section class="dj-lane">
+          <div class="dj-lane-head">
+            <h3>Queue</h3>
+            <p class="inline-hint">Approved and ready to play.</p>
+          </div>
+          <div id="approvedQueueList" class="queue-list" data-section-status="approved"></div>
+        </section>
+
+        <section class="dj-lane">
+          <div class="dj-lane-head">
+            <h3>Review</h3>
+            <p class="inline-hint">Needs manual decision.</p>
+          </div>
+          <div id="flaggedQueueList" class="queue-list" data-section-status="pending"></div>
+        </section>
+
+        <section class="dj-lane">
+          <div class="dj-lane-head">
+            <h3>Blocked</h3>
+            <p class="inline-hint">Rejected by policy/moderation.</p>
+          </div>
+          <div id="explicitQueueList" class="queue-list" data-section-status="rejected"></div>
+        </section>
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel dj-quickadd-panel">
       <div class="panel-head">
-        <h2>Now Playing</h2>
-        <button id="refreshPlaybackBtn" class="btn" type="button">Refresh</button>
+        <h2>Quick Add</h2>
       </div>
-      <p id="playbackStatus" class="status-message" aria-live="polite"></p>
-      <div class="now-playing-card">
-        <h3 id="nowPlayingTitle">No track active</h3>
-        <p id="nowPlayingMeta">Start playback from queue to persist now-playing state.</p>
-        <p id="nowPlayingBy">Played by: -</p>
-      </div>
-      <h3 class="playback-history-heading">Recent Playback</h3>
-      <div id="playbackHistoryList" class="queue-list"></div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <h2>DJ Quick Add</h2>
-      </div>
-      <p class="inline-hint">Search Spotify and add tracks directly to queue. DJ requests bypass rate limits.</p>
+      <p class="inline-hint">Search Spotify and add directly to queue when allowed by school-safe policy.</p>
       <p id="djQuickAddStatus" class="status-message" aria-live="polite"></p>
       <div class="search-row">
-        <input id="djQuickAddInput" type="text" placeholder="Find a song to add quickly">
+        <input id="djQuickAddInput" type="text" placeholder="Song or artist">
         <button id="djQuickAddSearchBtn" class="btn btn-primary" type="button">Search</button>
       </div>
       <div id="djQuickAddResults" class="results-grid"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel dj-playback-panel">
       <div class="panel-head">
-        <h2>SoundCloud Playback</h2>
+        <h2>Spotify Playback</h2>
+        <button id="refreshPlaybackBtn" class="btn" type="button">Refresh</button>
       </div>
-      <p class="inline-hint">Uses queue order. Auto-next can remove the current queue head when a track finishes.</p>
-      <p id="soundCloudStatus" class="status-message" aria-live="polite"></p>
-      <div class="player-card">
-        <div class="player-main">
-          <img id="soundCloudArtwork" class="player-artwork" src="" alt="Now playing artwork">
-          <div class="player-meta">
-            <h3 id="soundCloudTrackTitle">No track loaded</h3>
-            <p id="soundCloudTrackMeta">Start queue playback to load a song.</p>
-            <p id="soundCloudQueueMeta">Queue slot: -</p>
-          </div>
-        </div>
-        <div class="player-controls">
-          <button id="soundCloudStartBtn" class="btn btn-primary" type="button">Start Queue Playback</button>
-          <button id="soundCloudPlayPauseBtn" class="btn" type="button">Play</button>
-          <button id="soundCloudRestartBtn" class="btn" type="button">Restart</button>
-          <button id="soundCloudNextBtn" class="btn" type="button">Next In Queue</button>
-        </div>
-        <div class="player-progress">
-          <span id="soundCloudCurrentTime">0:00</span>
-          <input id="soundCloudProgress" type="range" min="0" max="1000" value="0" step="1">
-          <span id="soundCloudDuration">0:00</span>
-        </div>
-        <div class="player-volume">
-          <label for="soundCloudVolume">Volume</label>
-          <input id="soundCloudVolume" type="range" min="0" max="100" value="80" step="1">
-          <a id="soundCloudOpenLink" class="btn" href="#" target="_blank" rel="noopener noreferrer">Open In SoundCloud</a>
-        </div>
-        <div class="player-manual">
-          <label for="soundCloudManualUrl">Manual SoundCloud URL</label>
-          <input id="soundCloudManualUrl" type="text" placeholder="https://soundcloud.com/...">
-          <button id="soundCloudLoadUrlBtn" class="btn" type="button">Load URL</button>
-        </div>
+      <p id="playbackStatus" class="status-message" aria-live="polite"></p>
+      <div class="now-playing-card">
+        <h3 id="nowPlayingTitle">No track active</h3>
+        <p id="nowPlayingMeta">Start queue playback to load song details.</p>
+        <p id="nowPlayingBy">Played by: -</p>
       </div>
-      <label class="toggle-row" for="soundCloudAutoNext">
-        <input id="soundCloudAutoNext" type="checkbox" checked>
-        <span>Auto-advance queue when track finishes</span>
-      </label>
-      <div class="soundcloud-player-wrap">
-        <iframe
-          id="soundCloudPlayerFrame"
-          title="SoundCloud player"
-          allow="autoplay"
-          scrolling="no"
-          frameborder="no"
-          src="about:blank"></iframe>
-      </div>
-    </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Top Requesters</h2>
+      <p id="spotifyStatus" class="status-message" aria-live="polite"></p>
+      <div class="player-card">
+        <div class="player-controls">
+          <button id="spotifyStartBtn" class="btn btn-primary" type="button">Start Queue Playback</button>
+          <button id="spotifyNextBtn" class="btn" type="button">Next Song</button>
+          <a id="spotifyOpenLink" class="btn" href="#" target="_blank" rel="noopener noreferrer">Open In Spotify</a>
+        </div>
       </div>
-      <p id="requesterMetricsStatus" class="status-message" aria-live="polite"></p>
-      <div class="metrics-table-wrap">
-        <table class="metrics-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Total</th>
-              <th>Approved</th>
-              <th>Pending</th>
-              <th>Rejected</th>
-              <th>Last Requested</th>
-            </tr>
-          </thead>
-          <tbody id="requesterMetricsBody">
-            <tr>
-              <td colspan="6" class="metrics-empty">No requester metrics yet.</td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="player-embed-wrap">
+        <iframe
+          id="spotifyPlayerFrame"
+          title="Spotify player"
+          allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+          loading="lazy"
+          src="about:blank"></iframe>
       </div>
     </section>
   </main>
@@ -174,7 +111,6 @@
 <script src="/js/config.js"></script>
 <script src="/js/api.js"></script>
 <script src="/js/dj-auth.js"></script>
-<script src="https://w.soundcloud.com/player/api.js"></script>
 <script src="/js/dj-dashboard.js"></script>
 </body>
 </html>

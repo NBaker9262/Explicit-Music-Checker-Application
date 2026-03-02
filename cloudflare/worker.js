@@ -73,6 +73,16 @@ const LYRICS_MODERATION_HINT_TERMS = {
 };
 const LOCAL_PROFANITY_TERMS = ['fuck', 'fucking', 'shit', 'bitch', 'motherfucker', 'asshole', 'dick', 'pussy', 'nigga', 'nigger', 'cunt'];
 const DEFAULT_SAFE_TRACK_EXCEPTIONS = ['titanium'];
+const DEFAULT_STRICT_BLOCKED_TRACKS = ['california gurls'];
+const MODERATION_REASON_SUMMARY = {
+  clean_version_verified: 'Allowed: listed as a verified clean exception.',
+  explicit_lyrics: 'Blocked: explicit/profane lyrics detected.',
+  violence: 'Blocked: violent language or themes detected.',
+  hate_speech: 'Blocked: hate speech risk detected.',
+  sexual_content: 'Blocked: sexual content/themes detected.',
+  policy_violation: 'Blocked: school policy risk (drugs/alcohol/unsafe themes).',
+  other: 'Blocked: marked unsafe by DJ moderation.'
+};
 const NIGHTLY_BENCHMARK_SONG_POOL = [
   { name: 'Titanium', artist: 'David Guetta', explicit: false, bucket: 'good' },
   { name: 'Happy', artist: 'Pharrell Williams', explicit: false, bucket: 'good' },
@@ -101,6 +111,7 @@ const NIGHTLY_BENCHMARK_SONG_POOL = [
 ];
 const REQUEST_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 let rateLimitSchemaReady = false;
+let moderationLearningSchemaReady = false;
 
 function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -175,6 +186,7 @@ async function checkAndConsumeRateLimit(env, ipAddress) {
 
 function normalizeRole(role) {
   const normalized = sanitizeText(role, 20).toLowerCase();
+  if (normalized === 'dj') return 'admin';
   return ALLOWED_ROLES.includes(normalized) ? normalized : 'guest';
 }
 
@@ -279,6 +291,22 @@ function normalizeTrackExceptionKey(value) {
   return normalized.replace(/\s+/g, ' ').trim();
 }
 
+function normalizeModerationLearningKeyPart(value) {
+  const normalized = sanitizeText(String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' '), 220);
+  return normalized.replace(/\s+/g, ' ').trim();
+}
+
+function buildModerationLearningKey(trackName, artists) {
+  const songKey = normalizeModerationLearningKeyPart(trackName);
+  const artistKey = (Array.isArray(artists) ? artists : [])
+    .map((artist) => normalizeModerationLearningKeyPart(artist))
+    .filter(Boolean)
+    .sort()
+    .join(' ');
+  if (!songKey || !artistKey) return '';
+  return `${songKey}::${artistKey}`;
+}
+
 function getSafeTrackExceptionSet(env) {
   const raw = sanitizeText(env?.SAFE_TRACK_EXCEPTIONS || '', 2000);
   const entries = raw
@@ -296,6 +324,177 @@ function isSafeTrackException(trackName, env) {
   if (!key) return false;
   const exceptions = getSafeTrackExceptionSet(env);
   return exceptions.has(key);
+}
+
+function getStrictBlockedTrackSet(env) {
+  const raw = sanitizeText(env?.STRICT_BLOCK_TRACKS || '', 3000);
+  const entries = raw
+    ? raw.split(',').map((entry) => normalizeTrackExceptionKey(entry)).filter(Boolean)
+    : [];
+  DEFAULT_STRICT_BLOCKED_TRACKS.forEach((entry) => {
+    const key = normalizeTrackExceptionKey(entry);
+    if (key && !entries.includes(key)) entries.push(key);
+  });
+  return new Set(entries);
+}
+
+function isStrictBlockedTrack(trackName, env) {
+  const key = normalizeTrackExceptionKey(trackName);
+  if (!key) return false;
+  return getStrictBlockedTrackSet(env).has(key);
+}
+
+function isSchoolSafeStrictMode(env) {
+  return String(env?.SCHOOL_SAFE_MODE || '1') !== '0';
+}
+
+function buildFilterSummary({ status, moderationReason, reviewNote, contentConfidence }) {
+  const normalizedStatus = normalizeStatus(status) || 'pending';
+  const reason = sanitizeText(moderationReason || '', 64).toLowerCase();
+  const note = sanitizeText(reviewNote || '', 500);
+  const confidence = deriveContentConfidence(contentConfidence);
+
+  if (normalizedStatus === 'approved') {
+    if (reason && MODERATION_REASON_SUMMARY[reason]) return MODERATION_REASON_SUMMARY[reason];
+    if (confidence === 'clean') return 'Allowed: passed strict school-safe checks.';
+    return 'Allowed: approved by DJ review.';
+  }
+
+  if (normalizedStatus === 'pending') {
+    if (/openai fallback unavailable/i.test(note)) {
+      return 'Review: automated safety check was incomplete, waiting for DJ review.';
+    }
+    return 'Review: possible policy risk, waiting for DJ decision.';
+  }
+
+  if (reason && MODERATION_REASON_SUMMARY[reason]) return MODERATION_REASON_SUMMARY[reason];
+  if (/school safety blocklist/i.test(note)) return 'Blocked: on school blocklist.';
+  if (/profanity|explicit|sexual|violence|drug|alcohol/i.test(note)) {
+    return 'Blocked: lyrics/themes do not meet school-safe rules.';
+  }
+  return 'Blocked: failed school-safe moderation.';
+}
+
+async function ensureModerationLearningTable(env) {
+  if (moderationLearningSchemaReady) return;
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS moderation_learning (
+      track_key TEXT PRIMARY KEY,
+      track_name TEXT NOT NULL,
+      artists_key TEXT NOT NULL,
+      approved_count INTEGER NOT NULL DEFAULT 0,
+      pending_count INTEGER NOT NULL DEFAULT 0,
+      rejected_count INTEGER NOT NULL DEFAULT 0,
+      last_status TEXT NOT NULL DEFAULT 'pending',
+      updated_at TEXT NOT NULL
+    )`
+  ).run();
+  moderationLearningSchemaReady = true;
+}
+
+async function recordModerationFeedback(env, { trackName, artists, status }) {
+  const normalizedStatus = normalizeStatus(status);
+  const trackKey = buildModerationLearningKey(trackName, artists);
+  if (!trackKey || !normalizedStatus) return;
+
+  await ensureModerationLearningTable(env);
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO moderation_learning
+      (track_key, track_name, artists_key, approved_count, pending_count, rejected_count, last_status, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(track_key) DO UPDATE SET
+      approved_count = approved_count + excluded.approved_count,
+      pending_count = pending_count + excluded.pending_count,
+      rejected_count = rejected_count + excluded.rejected_count,
+      last_status = excluded.last_status,
+      updated_at = excluded.updated_at`
+  ).bind(
+    trackKey,
+    sanitizeText(trackName, 200),
+    (Array.isArray(artists) ? artists : []).map((artist) => sanitizeText(artist, 120)).filter(Boolean).sort().join(','),
+    normalizedStatus === 'approved' ? 1 : 0,
+    normalizedStatus === 'pending' ? 1 : 0,
+    normalizedStatus === 'rejected' ? 1 : 0,
+    normalizedStatus,
+    now
+  ).run();
+}
+
+async function getModerationLearningHint(env, { trackName, artists }) {
+  const trackKey = buildModerationLearningKey(trackName, artists);
+  if (!trackKey) return null;
+  await ensureModerationLearningTable(env);
+  const row = await env.DB.prepare(
+    `SELECT approved_count, pending_count, rejected_count, last_status, updated_at
+     FROM moderation_learning WHERE track_key = ? LIMIT 1`
+  ).bind(trackKey).first();
+  if (!row) return null;
+
+  const approvedCount = Math.max(0, Number(row.approved_count) || 0);
+  const pendingCount = Math.max(0, Number(row.pending_count) || 0);
+  const rejectedCount = Math.max(0, Number(row.rejected_count) || 0);
+  const totalFeedback = approvedCount + pendingCount + rejectedCount;
+  if (totalFeedback < 2) return null;
+
+  const statuses = [
+    { status: 'approved', count: approvedCount },
+    { status: 'pending', count: pendingCount },
+    { status: 'rejected', count: rejectedCount }
+  ].sort((left, right) => right.count - left.count);
+  const preferred = statuses[0];
+  const confidence = preferred.count / totalFeedback;
+
+  return {
+    approvedCount,
+    pendingCount,
+    rejectedCount,
+    totalFeedback,
+    preferredStatus: preferred.status,
+    confidence,
+    updatedAt: sanitizeText(row.updated_at || '', 40)
+  };
+}
+
+function applyModerationLearningHint(baseDecision, hint) {
+  if (!hint) return baseDecision;
+
+  const decision = { ...baseDecision };
+  const detail = `learned:${hint.preferredStatus} (${hint.approvedCount}/${hint.pendingCount}/${hint.rejectedCount})`;
+
+  if (
+    hint.preferredStatus === 'rejected'
+    && hint.rejectedCount >= 2
+    && hint.confidence >= 0.55
+  ) {
+    if (decision.status === 'approved') {
+      decision.status = 'pending';
+      decision.moderationReason = '';
+      decision.reviewNote = `${decision.reviewNote} | DJ feedback adjusted approved -> pending (${detail}).`;
+      return decision;
+    }
+    if (decision.status === 'pending') {
+      decision.status = 'rejected';
+      decision.moderationReason = decision.moderationReason || 'other';
+      decision.reviewNote = `${decision.reviewNote} | DJ feedback adjusted pending -> rejected (${detail}).`;
+      return decision;
+    }
+  }
+
+  if (
+    hint.preferredStatus === 'approved'
+    && hint.approvedCount >= 3
+    && hint.confidence >= 0.7
+    && decision.status === 'pending'
+  ) {
+    decision.status = 'approved';
+    decision.moderationReason = '';
+    decision.reviewNote = `${decision.reviewNote} | DJ feedback adjusted pending -> approved (${detail}).`;
+    return decision;
+  }
+
+  decision.reviewNote = `${decision.reviewNote} | DJ feedback observed (${detail}).`;
+  return decision;
 }
 
 async function fetchJsonWithTimeout(url, timeoutMs = 4000) {
@@ -581,6 +780,8 @@ function buildLyricsReviewNote(baseScore, combinedScore, lyricsAnalysis, fallbac
 async function getAutoModerationDecision({ trackName, artists, contentConfidence, env }) {
   const confidence = deriveContentConfidence(contentConfidence);
   const baseModerationScore = calculateModerationScore({ trackName, artists, contentConfidence: confidence });
+  const strictSchoolMode = isSchoolSafeStrictMode(env);
+  const blockedByTrackList = strictSchoolMode && isStrictBlockedTrack(trackName, env);
   const lyricsAnalysis = env?.DISABLE_LYRICS_MODERATION === '1'
     ? {
       foundLyrics: false,
@@ -608,8 +809,26 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
       && lyricsAnalysis.openAiFailed
       && !lyricsAnalysis.openAiFlagged
   );
-  const strongProfanitySignal = (Number(lyricsAnalysis.profanityHits) || 0) >= 5;
-  const rejectScoreThreshold = openAiBackstopMissing ? 22 : 32;
+  const strongProfanitySignal = strictSchoolMode
+    ? (Number(lyricsAnalysis.profanityHits) || 0) >= 2
+    : (Number(lyricsAnalysis.profanityHits) || 0) >= 5;
+  const rejectScoreThreshold = strictSchoolMode
+    ? (openAiBackstopMissing ? 26 : 34)
+    : (openAiBackstopMissing ? 22 : 32);
+  const highSeverityThemeSignal = (lyricsAnalysis.drugHits > 0)
+    || (lyricsAnalysis.alcoholHits >= 2)
+    || (lyricsAnalysis.suggestiveHits >= 3)
+    || (lyricsAnalysis.violenceHits >= 3);
+
+  if (blockedByTrackList) {
+    return {
+      status: 'rejected',
+      moderationReason: 'policy_violation',
+      reviewNote: `Blocked by school safety blocklist for "${sanitizeText(trackName, 120)}".`,
+      moderationScore: 0,
+      hardBlocked: true
+    };
+  }
 
   if (trackExceptionMatched && confidence !== 'explicit') {
     const boostedScore = Math.max(combinedScore, 78);
@@ -622,16 +841,24 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
         lyricsAnalysis,
         `Safe-song exception matched for "${sanitizeText(trackName, 120)}".`
       ),
-      moderationScore: boostedScore
+      moderationScore: boostedScore,
+      hardBlocked: false
     };
   }
 
-  if (confidence === 'explicit' || lyricsAnalysis.riskLevel === 'high' || strongProfanitySignal || combinedScore < rejectScoreThreshold) {
+  if (
+    confidence === 'explicit'
+    || lyricsAnalysis.riskLevel === 'high'
+    || strongProfanitySignal
+    || combinedScore < rejectScoreThreshold
+    || (strictSchoolMode && highSeverityThemeSignal)
+  ) {
     return {
       status: 'rejected',
       moderationReason: preferredReason,
       reviewNote: buildLyricsReviewNote(baseModerationScore, combinedScore, lyricsAnalysis, `Auto-marked explicit by moderation (${combinedScore}).`),
-      moderationScore: combinedScore
+      moderationScore: combinedScore,
+      hardBlocked: false
     };
   }
 
@@ -640,7 +867,8 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
       status: 'pending',
       moderationReason: '',
       reviewNote: buildLyricsReviewNote(baseModerationScore, combinedScore, lyricsAnalysis, `OpenAI fallback unavailable; manual review (${combinedScore}).`),
-      moderationScore: combinedScore
+      moderationScore: combinedScore,
+      hardBlocked: false
     };
   }
 
@@ -649,16 +877,18 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
       status: 'pending',
       moderationReason: '',
       reviewNote: buildLyricsReviewNote(baseModerationScore, combinedScore, lyricsAnalysis, `Auto-flagged for review (${combinedScore}).`),
-      moderationScore: combinedScore
+      moderationScore: combinedScore,
+      hardBlocked: false
     };
   }
 
-  if (confidence === 'clean' && combinedScore >= 70) {
+  if (confidence === 'clean' && combinedScore >= (strictSchoolMode ? 82 : 70)) {
     return {
       status: 'approved',
       moderationReason: '',
       reviewNote: buildLyricsReviewNote(baseModerationScore, combinedScore, lyricsAnalysis, `Auto-approved to queue (${combinedScore}).`),
-      moderationScore: combinedScore
+      moderationScore: combinedScore,
+      hardBlocked: false
     };
   }
 
@@ -666,7 +896,8 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
     status: 'pending',
     moderationReason: '',
     reviewNote: buildLyricsReviewNote(baseModerationScore, combinedScore, lyricsAnalysis, `Auto-flagged for review (${combinedScore}).`),
-    moderationScore: combinedScore
+    moderationScore: combinedScore,
+    hardBlocked: false
   };
 }
 
@@ -872,6 +1103,9 @@ function normalizeRequestRow(row) {
 
   const voteCount = Math.max(1, Number(row.vote_count) || requesters.length || 1);
   const contentConfidence = deriveContentConfidence(row.content_confidence);
+  const normalizedStatus = normalizeStatus(row.status) || 'pending';
+  const reviewNote = sanitizeText(row.review_note || '', 500);
+  const moderationReason = sanitizeText(row.moderation_reason || '', 64);
   const danceMoment = normalizeDanceMoment(row.dance_moment);
   const energyLevel = normalizeEnergyLevel(row.energy_level);
   const requesterRoles = requesters.map((entry) => entry.role);
@@ -901,12 +1135,18 @@ function normalizeRequestRow(row) {
     danceMoment,
     energyLevel,
     vibeTags: parseVibeTags(row.vibe_tags),
-    moderationReason: row.moderation_reason || '',
+    moderationReason,
     voteCount,
     priorityScore,
     priorityTier: getPriorityTier(priorityScore),
-    status: row.status,
-    reviewNote: row.review_note || '',
+    status: normalizedStatus,
+    reviewNote,
+    filterSummary: buildFilterSummary({
+      status: normalizedStatus,
+      moderationReason,
+      reviewNote,
+      contentConfidence
+    }),
     djNotes: row.dj_notes || '',
     setOrder: parsedSetOrder.valid ? parsedSetOrder.value : null,
     submittedAt: row.submitted_at,
@@ -949,8 +1189,8 @@ function buildDuplicateConflictPayloadFromRow(row) {
 }
 
 function getAdminCredentials(env) {
-  const username = sanitizeText(env.ADMIN_USERNAME || '', 80);
-  const password = sanitizeText(env.ADMIN_PASSWORD || '', 120);
+  const username = sanitizeText(env.DJ_USERNAME || env.ADMIN_USERNAME || '', 80);
+  const password = sanitizeText(env.DJ_PASSWORD || env.ADMIN_PASSWORD || '', 120);
   if (!username || !password) return null;
   return { username, password };
 }
@@ -1253,6 +1493,11 @@ async function pinTrackToTop(env, itemId) {
      SET status = 'approved', moderation_reason = '', set_order = 0, updated_at = ?, review_note = ?
      WHERE id = ?`
   ).bind(now, 'Pinned to top by DJ.', itemId).run();
+  await recordModerationFeedback(env, {
+    trackName: sanitizeText(existing.track_name || '', 200),
+    artists: parseArtists(existing.artists),
+    status: 'approved'
+  });
 
   await renumberActiveQueue(env);
   return { ok: true, itemId };
@@ -1536,12 +1781,31 @@ async function handleCreateRequest(request, env) {
     energyLevel: payload.energyLevel
   });
 
-  const autoDecision = await getAutoModerationDecision({
+  let autoDecision = await getAutoModerationDecision({
     trackName: payload.trackName,
     artists: payload.artists,
     contentConfidence: payload.contentConfidence,
     env
   });
+  if (isDjAuthorizedRequest && autoDecision.status !== 'rejected') {
+    autoDecision = {
+      ...autoDecision,
+      status: 'approved',
+      moderationReason: '',
+      reviewNote: `Added directly to queue by DJ (${sanitizeText(payload.requesterName, 80)}).`
+    };
+  } else if (isDjAuthorizedRequest && autoDecision.status === 'rejected') {
+    autoDecision = {
+      ...autoDecision,
+      reviewNote: `${autoDecision.reviewNote} | DJ quick-add blocked by strict school policy.`
+    };
+  } else {
+    const learningHint = await getModerationLearningHint(env, {
+      trackName: payload.trackName,
+      artists: payload.artists
+    });
+    autoDecision = applyModerationLearningHint(autoDecision, learningHint);
+  }
   const nextSetOrder = autoDecision.status === 'rejected' ? null : (await getMaxActiveSetOrder(env)) + 1;
 
   const insert = await env.DB.prepare(
@@ -1563,7 +1827,7 @@ async function handleCreateRequest(request, env) {
     payload.customMessage,
     payload.dedicationMessage,
     payload.eventDate,
-    payload.explicitFlag === null ? null : payload.explicitFlag ? 1 : 0,
+    payload.explicit === null ? null : payload.explicit ? 1 : 0,
     payload.contentConfidence,
     payload.danceMoment,
     payload.energyLevel,
@@ -1735,6 +1999,14 @@ async function handleAdminUpdateQueue(request, env, rawId) {
      SET status = ?, review_note = ?, moderation_reason = ?, dance_moment = ?, energy_level = ?, dj_notes = ?, set_order = ?, priority_score = ?, updated_at = ?
      WHERE id = ?`
   ).bind(status, reviewNote, resolvedModerationReason, danceMoment, energyLevel, djNotes, resolvedSetOrder, priorityScore, now, itemId).run();
+
+  if (hasStatus && previousStatus !== status) {
+    await recordModerationFeedback(env, {
+      trackName: sanitizeText(existing.track_name || '', 200),
+      artists: parseArtists(existing.artists),
+      status
+    });
+  }
 
   await renumberActiveQueue(env);
 
@@ -1923,6 +2195,87 @@ function tokenizeSoundCloudMatchText(value) {
   return normalized ? normalized.split(' ') : [];
 }
 
+function soundCloudContainsWholePhrase(haystack, phrase) {
+  const normalizedHaystack = normalizeSoundCloudMatchText(haystack);
+  const normalizedPhrase = normalizeSoundCloudMatchText(phrase);
+  if (!normalizedHaystack || !normalizedPhrase) return false;
+  return ` ${normalizedHaystack} `.includes(` ${normalizedPhrase} `);
+}
+
+function hasLikelySoundCloudVariantMarkers(title) {
+  const normalized = normalizeSoundCloudMatchText(title);
+  if (!normalized) return false;
+  const markers = [
+    'karaoke',
+    'instrumental',
+    'cover',
+    'tribute',
+    'nightcore',
+    'sped up',
+    'slowed',
+    'reverb',
+    'remix',
+    'edit',
+    'mashup'
+  ];
+  return markers.some((marker) => normalized.includes(marker));
+}
+
+function getMeaningfulSoundCloudTokens(value) {
+  const stop = new Set(['the', 'and', 'feat', 'ft', 'official', 'audio', 'video', 'lyrics', 'music', 'remix', 'edit', 'version']);
+  return tokenizeSoundCloudMatchText(value)
+    .map((token) => sanitizeText(token, 40))
+    .filter((token) => token && token.length >= 3 && !stop.has(token));
+}
+
+function computeSoundCloudTokenCoverage(requiredTokens, candidateTokens) {
+  if (!requiredTokens.length) return 1;
+  if (!candidateTokens.size) return 0;
+  let hits = 0;
+  requiredTokens.forEach((token) => {
+    if (candidateTokens.has(token)) hits += 1;
+  });
+  return hits / requiredTokens.length;
+}
+
+function buildSoundCloudCandidateSignals({ trackName, artists, candidateTitle, candidateArtist }) {
+  const titleNorm = normalizeSoundCloudMatchText(trackName);
+  const candidateTitleNorm = normalizeSoundCloudMatchText(candidateTitle);
+  const primaryArtist = sanitizeText((artists || [])[0] || '', 120);
+  const primaryArtistNorm = normalizeSoundCloudMatchText(primaryArtist);
+  const candidateArtistNorm = normalizeSoundCloudMatchText(candidateArtist);
+
+  const titleTokens = getMeaningfulSoundCloudTokens(trackName);
+  const candidateTitleTokens = new Set(getMeaningfulSoundCloudTokens(candidateTitle));
+  const primaryArtistTokens = getMeaningfulSoundCloudTokens(primaryArtist);
+  const candidateCompositeTokens = new Set(getMeaningfulSoundCloudTokens(`${candidateArtist} ${candidateTitle}`));
+
+  const titleCoverage = computeSoundCloudTokenCoverage(titleTokens, candidateTitleTokens);
+  const artistCoverage = computeSoundCloudTokenCoverage(primaryArtistTokens, candidateCompositeTokens);
+  const exactTitleFamilyMatch = Boolean(titleNorm && candidateTitleNorm && (
+    candidateTitleNorm === titleNorm
+    || candidateTitleNorm.includes(titleNorm)
+    || titleNorm.includes(candidateTitleNorm)
+  ));
+  const titleMatched = exactTitleFamilyMatch || titleCoverage >= 0.72;
+  const artistMatched = !primaryArtistTokens.length || artistCoverage >= 0.7 || (
+    primaryArtistNorm && candidateArtistNorm && (
+      candidateArtistNorm.includes(primaryArtistNorm)
+      || primaryArtistNorm.includes(candidateArtistNorm)
+    )
+  );
+  const artistStrictMatched = !primaryArtist || soundCloudContainsWholePhrase(candidateArtist, primaryArtist);
+
+  return {
+    titleCoverage,
+    artistCoverage,
+    titleMatched,
+    artistMatched,
+    artistStrictMatched,
+    acceptable: titleMatched && artistMatched && artistStrictMatched
+  };
+}
+
 function computeSoundCloudMatchScore({ trackName, artists, candidateTitle, candidateArtist }) {
   const titleNorm = normalizeSoundCloudMatchText(trackName);
   const candidateTitleNorm = normalizeSoundCloudMatchText(candidateTitle);
@@ -1956,23 +2309,43 @@ function computeSoundCloudMatchScore({ trackName, artists, candidateTitle, candi
     if (candidateArtistTokens.has(token)) score += 3;
   });
 
+  const signals = buildSoundCloudCandidateSignals({ trackName, artists, candidateTitle, candidateArtist });
+  score += Math.round(signals.titleCoverage * 50);
+  score += Math.round(signals.artistCoverage * 40);
+  if (signals.artistStrictMatched) score += 60;
+  if (signals.acceptable) score += 45;
+  if (hasLikelySoundCloudVariantMarkers(candidateTitle)) score -= 55;
+
   return score;
 }
 
 function mapSoundCloudTrack(track, { trackName, artists }) {
   const id = Number(track?.id || 0);
   const title = sanitizeText(track?.title || '', 220);
-  const artist = sanitizeText(track?.user?.username || track?.publisher_metadata?.artist || '', 120);
+  const uploaderName = sanitizeText(track?.user?.username || '', 120);
+  const publisherArtist = sanitizeText(track?.publisher_metadata?.artist || '', 120);
+  const artist = sanitizeText(publisherArtist || uploaderName, 120);
   const permalinkUrl = sanitizeText(track?.permalink_url || '', 400);
   if (!id || !title || !permalinkUrl) return null;
 
   const durationMs = Math.max(0, Number(track?.duration || track?.full_duration || 0));
   const artworkUrl = sanitizeText(track?.artwork_url || track?.user?.avatar_url || '', 400);
+  const artistComposite = sanitizeText(`${uploaderName} ${publisherArtist}`.trim(), 240);
+  const signals = buildSoundCloudCandidateSignals({ trackName, artists, candidateTitle: title, candidateArtist: artistComposite || artist });
+  const primaryArtist = sanitizeText((artists || [])[0] || '', 120);
+  const uploaderVerified = Boolean(track?.user?.verified || track?.verified);
+  const publisherStrictArtistMatch = !primaryArtist || soundCloudContainsWholePhrase(publisherArtist, primaryArtist);
+  const officialLikeArtistMatch = !primaryArtist || uploaderVerified || publisherStrictArtistMatch;
+  const variantLikely = hasLikelySoundCloudVariantMarkers(title);
 
   return {
     id,
     title,
     artist,
+    uploaderName,
+    publisherArtist,
+    uploaderVerified,
+    officialLikeArtistMatch,
     durationMs,
     artworkUrl,
     permalinkUrl,
@@ -1981,8 +2354,15 @@ function mapSoundCloudTrack(track, { trackName, artists }) {
       trackName,
       artists,
       candidateTitle: title,
-      candidateArtist: artist
-    })
+      candidateArtist: artistComposite || artist
+    }),
+    titleCoverage: signals.titleCoverage,
+    artistCoverage: signals.artistCoverage,
+    titleMatched: signals.titleMatched,
+    artistMatched: signals.artistMatched,
+    artistStrictMatched: signals.artistStrictMatched,
+    variantLikely,
+    acceptable: signals.acceptable
   };
 }
 
@@ -2204,7 +2584,34 @@ async function handleAdminSoundCloudResolve(request, env) {
     return json({ error: 'No SoundCloud match found for this queue track.', code: 'soundcloud_not_found', status: 404, detail: '', query, candidates: [] }, 404);
   }
 
-  const match = candidates[0];
+  const verifiedCandidates = candidates.filter((candidate) =>
+    candidate.acceptable
+    && candidate.artistStrictMatched
+    && candidate.officialLikeArtistMatch
+    && !candidate.variantLikely
+    && candidate.matchScore >= 120
+  );
+  if (!verifiedCandidates.length) {
+    return json({
+      error: 'No artist-verified SoundCloud match found for this song.',
+      code: 'soundcloud_not_found',
+      status: 404,
+      detail: 'no_artist_verified_match',
+      query,
+      candidates: candidates.map((entry) => ({
+        id: entry.id,
+        title: entry.title,
+        artist: entry.artist,
+        matchScore: entry.matchScore,
+        titleMatched: entry.titleMatched,
+        artistMatched: entry.artistMatched,
+        artistStrictMatched: entry.artistStrictMatched,
+        officialLikeArtistMatch: entry.officialLikeArtistMatch
+      }))
+    }, 404);
+  }
+
+  const match = verifiedCandidates[0];
   return json({
     query,
     match: {
@@ -2216,11 +2623,16 @@ async function handleAdminSoundCloudResolve(request, env) {
       permalinkUrl: match.permalinkUrl,
       apiTrackUrl: match.apiTrackUrl
     },
-    widgetSrc: buildSoundCloudWidgetSrc(match.permalinkUrl || match.apiTrackUrl),
+    widgetSrc: buildSoundCloudWidgetSrc(match.apiTrackUrl || match.permalinkUrl),
     candidates: candidates.map((entry) => ({
       id: entry.id,
       title: entry.title,
       artist: entry.artist,
+      matchScore: entry.matchScore,
+      titleMatched: entry.titleMatched,
+      artistMatched: entry.artistMatched,
+      artistStrictMatched: entry.artistStrictMatched,
+      officialLikeArtistMatch: entry.officialLikeArtistMatch,
       durationMs: entry.durationMs,
       artworkUrl: entry.artworkUrl,
       permalinkUrl: entry.permalinkUrl,
@@ -2685,7 +3097,16 @@ export default {
       if (request.method === 'GET' && routePath === '/api/admin/soundcloud/resolve') {
         const unauthorized = requireAdmin(request, env);
         if (unauthorized) return withCors(unauthorized, corsHeaders);
-        return withCors(await handleAdminSoundCloudResolve(request, env), corsHeaders);
+        return withCors(
+          json(
+            {
+              error: 'SoundCloud playback is disabled. Use Spotify playback only.',
+              code: 'soundcloud_disabled'
+            },
+            410
+          ),
+          corsHeaders
+        );
       }
 
       if (request.method === 'GET' && url.pathname === '/api/public/queue') {

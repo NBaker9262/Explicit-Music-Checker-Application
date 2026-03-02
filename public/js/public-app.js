@@ -31,6 +31,10 @@ const closeRateLimitModalBtn = document.getElementById('closeRateLimitModalBtn')
 let selectedTrack = null;
 let cooldownTimer = null;
 let searchPageToken = 0;
+const djSession = {
+  active: false,
+  username: ''
+};
 
 const REQUEST_COOLDOWN_KEY = 'request_cooldown_until';
 const REQUESTER_NAME_KEY = 'requester_name_v1';
@@ -113,13 +117,59 @@ function saveRequesterName(name) {
   }
 }
 
+function getDjToken() {
+  if (!window.djAuth || typeof window.djAuth.getAdminToken !== 'function') return '';
+  return String(window.djAuth.getAdminToken() || '').trim();
+}
+
+function isDjSignedIn() {
+  return Boolean(djSession.active && djSession.username);
+}
+
+async function hydrateDjSession() {
+  const token = getDjToken();
+  if (!token || !window.djAuth || typeof window.djAuth.adminFetch !== 'function') {
+    djSession.active = false;
+    djSession.username = '';
+    return;
+  }
+
+  try {
+    const response = await window.djAuth.adminFetch('/api/dj/session');
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      window.djAuth.clearAdminToken?.();
+      djSession.active = false;
+      djSession.username = '';
+      return;
+    }
+
+    const username = normalizeRequesterName(payload?.username || '');
+    djSession.active = Boolean(username);
+    djSession.username = username || 'DJ';
+  } catch {
+    window.djAuth.clearAdminToken?.();
+    djSession.active = false;
+    djSession.username = '';
+  }
+}
+
 function updateRequesterIdentityChip() {
   if (!requesterIdentityChip) return;
+  if (isDjSignedIn()) {
+    requesterIdentityChip.textContent = `DJ Mode: ${djSession.username} (no request limits)`;
+    if (changeRequesterNameBtn) changeRequesterNameBtn.hidden = true;
+    hideRequesterIdentityEditor();
+    if (requesterNameInput) requesterNameInput.value = djSession.username;
+    return;
+  }
+  if (changeRequesterNameBtn) changeRequesterNameBtn.hidden = false;
   const savedName = getSavedRequesterName();
   requesterIdentityChip.textContent = savedName ? `Signed in as ${savedName}` : 'Not signed in';
 }
 
 function showRequesterIdentityEditor() {
+  if (isDjSignedIn()) return;
   if (!requesterIdentityEditor || !requesterIdentityInput) return;
   requesterIdentityEditor.hidden = false;
   requesterIdentityInput.value = getSavedRequesterName();
@@ -176,6 +226,10 @@ function clearCooldown() {
 }
 
 function updateCooldownUi() {
+  if (isDjSignedIn()) {
+    if (submitBtn) submitBtn.disabled = false;
+    return false;
+  }
   const cooldownEndMs = getCooldownEndMs();
   const remainingMs = cooldownEndMs === null ? 0 : cooldownEndMs - Date.now();
 
@@ -250,7 +304,7 @@ function updateLoadMoreButton() {
 function openRequestOverlay() {
   if (!requestOverlay) return;
   const savedName = getSavedRequesterName();
-  if (requesterNameInput && savedName) requesterNameInput.value = savedName;
+  if (requesterNameInput) requesterNameInput.value = isDjSignedIn() ? djSession.username : savedName;
   requestOverlay.hidden = false;
   document.body.classList.add('modal-open');
   requesterNameInput?.focus();
@@ -263,10 +317,19 @@ function closeRequestOverlay({ clearSelection = true } = {}) {
   }
   if (requestForm) requestForm.reset();
   const savedName = getSavedRequesterName();
-  if (requesterNameInput && savedName) requesterNameInput.value = savedName;
+  if (requesterNameInput) requesterNameInput.value = isDjSignedIn() ? djSession.username : savedName;
   setRequestStatus('');
   if (requestOverlay) requestOverlay.hidden = true;
   document.body.classList.remove('modal-open');
+}
+
+function buildPublicRequestHeaders() {
+  const headers = { 'Content-Type': 'application/json' };
+  const token = getDjToken();
+  if (isDjSignedIn() && token) {
+    headers.Authorization = `Basic ${token}`;
+  }
+  return headers;
 }
 
 function chooseTrack(track) {
@@ -540,23 +603,25 @@ async function submitRequest(event) {
     return;
   }
 
-  if (updateCooldownUi()) {
+  const djMode = isDjSignedIn();
+  if (!djMode && updateCooldownUi()) {
     showRateLimitModal('Please wait before sending another request. One request is allowed every 10 minutes.');
     return;
   }
 
-  const requesterName = requesterNameInput.value.trim();
+  const requesterName = normalizeRequesterName(djMode ? (djSession.username || 'DJ') : requesterNameInput.value);
   if (!requesterName) {
     setRequestStatus('Your name is required.', true);
     return;
   }
 
+  const selectedTrackLabel = String(selectedTrack?.name || '').trim();
   setRequestStatus('Submitting request...');
 
   try {
     const response = await fetch(window.appApi.buildApiUrl('/api/public/request'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildPublicRequestHeaders(),
       body: JSON.stringify({
         trackId: selectedTrack.id,
         trackName: selectedTrack.name,
@@ -565,12 +630,17 @@ async function submitRequest(event) {
         albumImage: selectedTrack.albumImage,
         spotifyUrl: selectedTrack.spotifyUrl,
         explicit: typeof selectedTrack.explicit === 'boolean' ? selectedTrack.explicit : null,
-        requesterName
+        requesterName,
+        requesterRole: djMode ? 'dj' : 'guest'
       })
     });
 
     const payload = await response.json();
     if (response.status === 429) {
+      if (djMode) {
+        setRequestStatus('DJ mode bypass should skip request limits. Please refresh and retry.', true);
+        return;
+      }
       if (payload.nextAllowedAt) setCooldown(payload.nextAllowedAt);
       const seconds = Math.max(1, Number(payload.retryAfterSec) || 0);
       const message = `Request delay active. Please wait ${formatRemaining(seconds)} before submitting another song.`;
@@ -589,15 +659,19 @@ async function submitRequest(event) {
 
     if (!response.ok) throw new Error(payload.error || 'Request failed');
 
-    const savedName = saveRequesterName(requesterName);
-    if (savedName) {
-      updateRequesterIdentityChip();
-      if (requesterNameInput) requesterNameInput.value = savedName;
+    if (!djMode) {
+      const savedName = saveRequesterName(requesterName);
+      if (savedName) {
+        updateRequesterIdentityChip();
+        if (requesterNameInput) requesterNameInput.value = savedName;
+      }
     }
-    if (payload.nextAllowedAt) setCooldown(payload.nextAllowedAt);
+    if (!djMode && payload.nextAllowedAt) setCooldown(payload.nextAllowedAt);
     resetToDefaultPage();
-    setSearchStatus(`Request sent for "${selectedTrack?.name || payload.trackName || 'selected song'}".`);
-    showRateLimitModal('Request received. You can submit another song after 10 minutes.');
+    setSearchStatus(`Request sent for "${selectedTrackLabel || payload.trackName || 'selected song'}".`);
+    if (!djMode) {
+      showRateLimitModal('Request received. You can submit another song after 10 minutes.');
+    }
     searchInput?.focus();
     await loadLiveQueue();
   } catch (error) {
@@ -643,6 +717,7 @@ async function loadLiveQueue() {
 }
 
 function saveRequesterIdentityFromEditor() {
+  if (isDjSignedIn()) return;
   if (!requesterIdentityInput) return;
   const normalized = normalizeRequesterName(requesterIdentityInput.value);
   if (!normalized) {
@@ -695,9 +770,20 @@ document.addEventListener('keydown', (event) => {
   if (rateLimitModal && !rateLimitModal.hidden) hideRateLimitModal();
 });
 
-loadLiveQueue();
-startCooldownTimer();
-updateRequesterIdentityChip();
-if (requesterNameInput && getSavedRequesterName()) requesterNameInput.value = getSavedRequesterName();
-updateLoadMoreButton();
-setInterval(loadLiveQueue, 8000);
+async function initPublicPage() {
+  await hydrateDjSession();
+  updateRequesterIdentityChip();
+  if (requesterNameInput) {
+    requesterNameInput.value = isDjSignedIn() ? djSession.username : getSavedRequesterName();
+  }
+  if (!isDjSignedIn()) {
+    startCooldownTimer();
+  } else {
+    setRequestStatus('');
+  }
+  updateLoadMoreButton();
+  await loadLiveQueue();
+  setInterval(loadLiveQueue, 8000);
+}
+
+initPublicPage();
