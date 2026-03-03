@@ -348,6 +348,10 @@ select:focus {
     font-size: 0.9rem;
 }
 
+.inline-hint.error {
+    color: var(--danger);
+}
+
 .results-grid,
 .queue-list {
     display: grid;
@@ -666,52 +670,145 @@ select:focus {
     background:
         linear-gradient(165deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 42%),
         linear-gradient(145deg, #08356f, #002d61 58%, #001f45);
-    padding: 12px;
+    padding: 14px;
     display: grid;
-    gap: 10px;
+    gap: 12px;
     box-shadow: 0 14px 30px rgba(0, 18, 41, 0.25);
 }
 
+<<<<<<< HEAD
 .spotify-unified-player {
     gap: 12px;
 }
 
 .player-main {
+=======
+.music-player {
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 14px;
+    padding: 12px;
+    background: linear-gradient(155deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.03));
+>>>>>>> f0d4a8e (feat: integrate Spotify OAuth flow and update SoundCloud references)
     display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
-    gap: 10px;
+    gap: 12px;
+}
+
+.music-player .now-playing {
+    display: grid;
+    grid-template-columns: 92px minmax(0, 1fr);
+    gap: 12px;
     align-items: center;
 }
 
-.player-artwork {
-    width: 72px;
-    height: 72px;
-    border-radius: 10px;
-    border: 1px solid rgba(255, 255, 255, 0.34);
-    background: rgba(255, 255, 255, 0.14);
+.music-player .album-art {
+    width: 92px;
+    height: 92px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    background:
+      linear-gradient(160deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.06)),
+      rgba(255, 255, 255, 0.08);
     object-fit: cover;
 }
 
-.player-meta h3 {
+.music-player .track-info {
+    min-width: 0;
+}
+
+.music-player .track-name {
+    color: #ffffff;
+    font-size: 1.08rem;
+    font-weight: 700;
+    line-height: 1.25;
     margin: 0 0 4px;
-    font-size: 1rem;
     overflow-wrap: anywhere;
+}
+
+.music-player .artist-name {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 0.93rem;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.music-player .controls {
+    display: grid;
+    gap: 10px;
+}
+
+.music-player .seek-container {
+    display: grid;
+    gap: 6px;
+}
+
+.music-player .seek-range {
+    width: 100%;
+    accent-color: #1db954;
+    height: 24px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+}
+
+.music-player .seek-range:focus {
+    box-shadow: none;
+}
+
+.music-player .time-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: rgba(255, 255, 255, 0.84);
+    font-size: 0.83rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.music-player .control-buttons {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+
+.music-player .control-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.34);
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+    font-size: 1.15rem;
+    cursor: pointer;
+    transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.music-player .control-btn:hover {
+    transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.22);
+}
+
+.music-player .control-btn:active {
+    transform: translateY(0);
+}
+
+.music-player .control-btn-primary {
+    background: #1db954;
+    border-color: #1db954;
     color: #ffffff;
 }
 
-.player-meta p {
-    margin: 0 0 2px;
-    color: rgba(255, 255, 255, 0.82);
-    font-size: 0.92rem;
-    overflow-wrap: anywhere;
+.music-player .control-btn-primary:hover {
+    background: #19a54c;
+    border-color: #19a54c;
 }
 
 .player-controls {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
     gap: 8px;
 }
 
+<<<<<<< HEAD
 .spotify-icon-controls {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -801,18 +898,21 @@ select:focus {
     font-weight: 600;
 }
 
+=======
+>>>>>>> f0d4a8e (feat: integrate Spotify OAuth flow and update SoundCloud references)
 .player-embed-wrap {
-    margin-top: 10px;
-    border: 1px solid var(--line);
+    margin-top: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.26);
     border-radius: var(--radius-sm);
     overflow: hidden;
-    background: #fff;
+    min-height: 154px;
+    background: rgba(0, 0, 0, 0.22);
 }
 
 .player-embed-wrap iframe {
     display: block;
     width: 100%;
-    min-height: 166px;
+    min-height: 154px;
 }
 
 .queue-row {
@@ -1176,16 +1276,12 @@ select:focus {
         position: static;
     }
 
-    .player-main {
+    .music-player .now-playing {
         grid-template-columns: 1fr;
     }
 
-    .player-volume {
-        grid-template-columns: 1fr;
-    }
-
-    .player-manual {
-        grid-template-columns: 1fr;
+    .music-player .control-buttons {
+        justify-content: flex-start;
     }
 
     .selected-song,
@@ -1193,4 +1289,139 @@ select:focus {
     .queue-row-main {
         grid-template-columns: 1fr;
     }
+}
+
+/* Minimal black/white design system overrides */
+:root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-soft: #f7f7f7;
+    --text: #111111;
+    --muted: #5f5f5f;
+    --border: #dddddd;
+    --line: #ebebeb;
+    --primary: #111111;
+    --primary-strong: #000000;
+    --accent: #111111;
+    --accent-soft: #f5f5f5;
+    --danger: #111111;
+    --shadow: none;
+}
+
+body,
+.app-bg {
+    background: #ffffff;
+    color: #111111;
+}
+
+.hero,
+.panel,
+.queue-row,
+.song-card,
+.queue-card,
+.modal-card {
+    background: #ffffff;
+    border-color: #e4e4e4;
+    box-shadow: none;
+}
+
+.hero,
+.dj-hero {
+    background: #ffffff;
+}
+
+.brand-mark {
+    background: #ffffff;
+    border-color: #d9d9d9;
+}
+
+.panel-subtitle,
+.hero-copy,
+.song-card p,
+.queue-row-main p,
+.inline-hint,
+.status-message {
+    color: #5f5f5f;
+}
+
+.btn {
+    border: 1px solid #111111;
+    background: #ffffff;
+    color: #111111;
+}
+
+.btn:hover {
+    background: #f4f4f4;
+    border-color: #111111;
+}
+
+.btn-primary,
+.btn-danger {
+    background: #111111;
+    border-color: #111111;
+    color: #ffffff;
+}
+
+.btn-primary:hover,
+.btn-danger:hover {
+    background: #000000;
+    border-color: #000000;
+}
+
+input,
+select {
+    border: 1px solid #d8d8d8;
+    background: #ffffff;
+    color: #111111;
+}
+
+input:focus,
+select:focus {
+    border-color: #111111;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.08);
+}
+
+.badge {
+    background: #f3f3f3;
+    color: #111111;
+    border: 1px solid #dddddd;
+}
+
+.player-card,
+.music-player,
+.dj-lane,
+.now-playing-card {
+    background: #ffffff;
+    border: 1px solid #e4e4e4;
+    box-shadow: none;
+}
+
+.music-player .track-name {
+    color: #111111;
+}
+
+.music-player .artist-name,
+.music-player .time-info {
+    color: #5f5f5f;
+}
+
+.music-player .control-btn {
+    border: 1px solid #111111;
+    background: #ffffff;
+    color: #111111;
+}
+
+.music-player .control-btn-primary {
+    background: #111111;
+    border-color: #111111;
+    color: #ffffff;
+}
+
+.music-player .seek-range {
+    accent-color: #111111;
+}
+
+.player-embed-wrap {
+    background: #ffffff;
+    border-color: #e4e4e4;
 }

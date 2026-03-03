@@ -60,11 +60,12 @@ const MODERATION_TERMS = ['explicit', 'uncensored', 'dirty', 'parental advisory'
 const LYRICS_OVH_BASE_URL = 'https://api.lyrics.ovh/v1';
 const LRCLIB_BASE_URL = 'https://lrclib.net/api/get';
 const OPENAI_MODERATIONS_URL = 'https://api.openai.com/v1/moderations';
-const SOUND_CLOUD_TRACKS_BASE_URL = 'https://api.soundcloud.com/tracks';
-const SOUND_CLOUD_SEARCH_V2_URL = 'https://api-v2.soundcloud.com/search/tracks';
-const SOUND_CLOUD_OAUTH_TOKEN_URL = 'https://secure.soundcloud.com/oauth/token';
-const SOUND_CLOUD_OAUTH_TOKEN_FALLBACK_URL = 'https://api.soundcloud.com/oauth2/token';
-const SOUND_CLOUD_PUBLIC_SEARCH_PAGE_URL = 'https://soundcloud.com/search/sounds';
+const SPOTIFY_ACCOUNTS_BASE_URL = 'https://accounts.spotify.com';
+const SPOTIFY_WEB_API_BASE_URL = 'https://api.spotify.com/v1';
+const SPOTIFY_DJ_SCOPE = 'streaming user-read-email user-read-private user-modify-playback-state user-read-playback-state';
+const SPOTIFY_DJ_AUTH_STATE_KEY = 'spotify_dj_auth';
+const SPOTIFY_DJ_OAUTH_STATE_KEY = 'spotify_dj_oauth_state';
+const SPOTIFY_DJ_OAUTH_TTL_MS = 10 * 60 * 1000;
 const LYRICS_MODERATION_HINT_TERMS = {
   suggestive: ['sex', 'sexy', 'bed', 'naked', 'freak', 'hook up', 'make love', 'twerk'],
   alcohol: ['alcohol', 'drink', 'drunk', 'whiskey', 'vodka', 'tequila', 'beer', 'wine', 'shots', 'bar', 'bottle', 'liquor'],
@@ -72,7 +73,7 @@ const LYRICS_MODERATION_HINT_TERMS = {
   violence: ['gun', 'guns', 'shoot', 'murder', 'kill', 'blood', 'knife', 'fight', 'dead', 'die']
 };
 const LOCAL_PROFANITY_TERMS = ['fuck', 'fucking', 'shit', 'bitch', 'motherfucker', 'asshole', 'dick', 'pussy', 'nigga', 'nigger', 'cunt'];
-const DEFAULT_SAFE_TRACK_EXCEPTIONS = ['titanium'];
+const DEFAULT_SAFE_TRACK_EXCEPTIONS = ['titanium', 'shut up and dance'];
 const DEFAULT_STRICT_BLOCKED_TRACKS = ['california gurls'];
 const MODERATION_REASON_SUMMARY = {
   clean_version_verified: 'Allowed: listed as a verified clean exception.',
@@ -131,6 +132,113 @@ function clampNumber(value, min, max) {
 function sanitizeText(value, maxLength = 500) {
   if (typeof value !== 'string') return '';
   return value.trim().slice(0, maxLength);
+}
+
+function base64UrlEncode(bytes) {
+  let binary = '';
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function createPkceCodeVerifier(byteLength = 64) {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return base64UrlEncode(bytes);
+}
+
+async function createPkceCodeChallenge(codeVerifier) {
+  const data = new TextEncoder().encode(String(codeVerifier || ''));
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
+function createSpotifyStateToken(byteLength = 16) {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return base64UrlEncode(bytes);
+}
+
+function parseJsonTextSafe(value) {
+  try {
+    return JSON.parse(String(value || '{}'));
+  } catch {
+    return null;
+  }
+}
+
+async function parseJsonResponseSafe(response) {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
+function normalizeSpotifyDjTrackUri(rawValue) {
+  const value = String(rawValue || '').trim();
+  if (!value) return '';
+  if (/^spotify:track:[A-Za-z0-9]{22}$/.test(value)) return value;
+  if (/^[A-Za-z0-9]{22}$/.test(value)) return `spotify:track:${value}`;
+  try {
+    const parsed = new URL(value);
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const trackIndex = parts.indexOf('track');
+    if (trackIndex >= 0 && parts[trackIndex + 1]) {
+      const token = String(parts[trackIndex + 1] || '').trim();
+      if (/^[A-Za-z0-9]{22}$/.test(token)) return `spotify:track:${token}`;
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function normalizeSpotifyDjDeviceId(rawValue) {
+  const value = String(rawValue || '').trim();
+  return /^[A-Za-z0-9]{8,200}$/.test(value) ? value : '';
+}
+
+function resolveSpotifyDjReturnTo(request, rawReturnTo) {
+  const requestUrl = new URL(request.url);
+  const apiOrigin = requestUrl.origin;
+
+  let originHeader = '';
+  try {
+    const rawOrigin = sanitizeText(request.headers.get('Origin') || '', 300);
+    if (rawOrigin) originHeader = new URL(rawOrigin).origin;
+  } catch {
+    originHeader = '';
+  }
+
+  const allowedOrigins = new Set([apiOrigin]);
+  if (originHeader) allowedOrigins.add(originHeader);
+
+  const fallbackOrigin = originHeader || apiOrigin;
+  const fallbackUrl = `${fallbackOrigin}/dj/dashboard.html`;
+  const candidate = sanitizeText(rawReturnTo || '', 800);
+  if (!candidate) return fallbackUrl;
+
+  try {
+    const parsed = new URL(candidate);
+    if (!(parsed.protocol === 'http:' || parsed.protocol === 'https:')) return fallbackUrl;
+    if (!allowedOrigins.has(parsed.origin)) return fallbackUrl;
+    return parsed.href;
+  } catch {
+    return fallbackUrl;
+  }
+}
+
+function appendQueryParams(baseUrl, entries) {
+  const parsed = new URL(baseUrl);
+  Object.entries(entries || {}).forEach(([key, value]) => {
+    if (value === null || value === undefined) return;
+    const serialized = String(value || '').trim();
+    if (!serialized) return;
+    parsed.searchParams.set(key, serialized);
+  });
+  return parsed.toString();
 }
 
 function getClientIp(request) {
@@ -756,9 +864,9 @@ async function analyzeLyricsModeration(trackName, artists, env) {
     65
   );
 
-  const themeScore = Math.min(40, (suggestiveHits * 3) + (alcoholHits * 2) + (drugHits * 6) + (violenceHits * 5));
+  const themeScore = Math.min(40, (suggestiveHits * 1) + (alcoholHits * 1) + (drugHits * 6) + (violenceHits * 5));
   const riskScore = clampNumber(profanityScore + themeScore + openAiScore, 0, 100);
-  const riskLevel = riskScore >= 76 ? 'high' : riskScore >= 34 ? 'medium' : 'low';
+  const riskLevel = riskScore >= 82 ? 'high' : riskScore >= 40 ? 'medium' : 'low';
 
   return {
     foundLyrics: true,
@@ -789,7 +897,7 @@ function chooseModerationReasonFromLyrics(lyricsAnalysis) {
   if (lyricsAnalysis.profanityDetected) return 'other';
   if (lyricsAnalysis.drugHits > 0 || lyricsAnalysis.alcoholHits > 0) return 'policy_violation';
   if (lyricsAnalysis.violenceHits > 0) return 'violence';
-  if (lyricsAnalysis.suggestiveHits > 0) return 'sexual_content';
+  if (lyricsAnalysis.suggestiveHits >= 8) return 'sexual_content';
   return '';
 }
 
@@ -853,6 +961,7 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
     ? (Number(lyricsAnalysis.profanityHits) || 0) >= 3
     : (Number(lyricsAnalysis.profanityHits) || 0) >= 6;
   const rejectScoreThreshold = strictSchoolMode
+<<<<<<< HEAD
     ? (openAiBackstopMissing ? 22 : 30)
     : (openAiBackstopMissing ? 18 : 26);
   const highSeverityThemeSignal = (lyricsAnalysis.drugHits >= 2)
@@ -864,6 +973,23 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
     || strongProfanitySignal
     || lyricsAnalysis.drugHits >= 2
     || lyricsAnalysis.violenceHits >= 2
+=======
+    ? (openAiBackstopMissing ? 26 : 34)
+    : (openAiBackstopMissing ? 22 : 32);
+  const highSeverityThemeSignal = (lyricsAnalysis.drugHits > 0)
+    || (lyricsAnalysis.alcoholHits >= 2)
+    || (lyricsAnalysis.violenceHits >= 3);
+  const danceFriendlySuggestiveCase = Boolean(
+    confidence === 'clean'
+    && lyricsAnalysis.foundLyrics
+    && !lyricsAnalysis.openAiFlagged
+    && (lyricsAnalysis.profanityHits || 0) === 0
+    && (lyricsAnalysis.drugHits || 0) === 0
+    && (lyricsAnalysis.violenceHits || 0) === 0
+    && (lyricsAnalysis.alcoholHits || 0) <= 1
+    && (lyricsAnalysis.suggestiveHits || 0) > 0
+    && (lyricsAnalysis.suggestiveHits || 0) <= 8
+>>>>>>> f0d4a8e (feat: integrate Spotify OAuth flow and update SoundCloud references)
   );
 
   if (blockedByTrackList) {
@@ -897,7 +1023,7 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
     || severeRiskSignal
     || strongProfanitySignal
     || combinedScore < rejectScoreThreshold
-    || (strictSchoolMode && highSeverityThemeSignal)
+    || (strictSchoolMode && highSeverityThemeSignal && !danceFriendlySuggestiveCase)
   ) {
     return {
       status: 'rejected',
@@ -918,6 +1044,21 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
     };
   }
 
+  if (danceFriendlySuggestiveCase && combinedScore >= (strictSchoolMode ? 58 : 52)) {
+    return {
+      status: 'approved',
+      moderationReason: '',
+      reviewNote: buildLyricsReviewNote(
+        baseModerationScore,
+        combinedScore,
+        lyricsAnalysis,
+        `Dance-safe suggestive content tolerated for clean track (${combinedScore}).`
+      ),
+      moderationScore: combinedScore,
+      hardBlocked: false
+    };
+  }
+
   if (lyricsAnalysis.riskLevel === 'medium' || lyricsAnalysis.profanityDetected) {
     return {
       status: 'pending',
@@ -928,7 +1069,7 @@ async function getAutoModerationDecision({ trackName, artists, contentConfidence
     };
   }
 
-  if (confidence === 'clean' && combinedScore >= (strictSchoolMode ? 82 : 70)) {
+  if (confidence === 'clean' && combinedScore >= (strictSchoolMode ? 78 : 66)) {
     return {
       status: 'approved',
       moderationReason: '',
@@ -1433,6 +1574,398 @@ async function ensureDjPlaybackTables(env) {
     ),
     env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_dj_playback_history_played_at ON dj_playback_history(played_at DESC)')
   ]);
+}
+
+async function getDjPlaybackStateValue(env, stateKey) {
+  await ensureDjPlaybackTables(env);
+  const key = sanitizeText(stateKey || '', 120);
+  if (!key) return null;
+  const row = await env.DB.prepare(
+    'SELECT state_value FROM dj_playback_state WHERE state_key = ? LIMIT 1'
+  ).bind(key).first();
+  if (!row?.state_value) return null;
+  return parseJsonTextSafe(row.state_value);
+}
+
+async function setDjPlaybackStateValue(env, stateKey, stateValue) {
+  await ensureDjPlaybackTables(env);
+  const key = sanitizeText(stateKey || '', 120);
+  if (!key) return;
+  if (stateValue === null || stateValue === undefined) {
+    await env.DB.prepare('DELETE FROM dj_playback_state WHERE state_key = ?').bind(key).run();
+    return;
+  }
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO dj_playback_state (state_key, state_value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(state_key) DO UPDATE SET state_value = excluded.state_value, updated_at = excluded.updated_at`
+  ).bind(
+    key,
+    JSON.stringify(stateValue),
+    now
+  ).run();
+}
+
+function getSpotifyAuthHeader(env) {
+  const clientId = sanitizeText(env?.SPOTIFY_CLIENT_ID || '', 200);
+  const clientSecret = sanitizeText(env?.SPOTIFY_CLIENT_SECRET || '', 220);
+  if (!clientId || !clientSecret) return '';
+  return `Basic ${btoa(`${clientId}:${clientSecret}`)}`;
+}
+
+function hasSpotifyClientCredentials(env) {
+  return Boolean(getSpotifyAuthHeader(env));
+}
+
+function buildSpotifyDjCallbackUrl(request, env) {
+  const configured = sanitizeText(env?.SPOTIFY_REDIRECT_URI || '', 500);
+  if (configured) {
+    try {
+      const parsed = new URL(configured);
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        return `${parsed.origin}${parsed.pathname}`;
+      }
+    } catch {
+      // Ignore malformed override and fall back to request origin.
+    }
+  }
+
+  const requestUrl = new URL(request.url);
+  return `${requestUrl.origin}/api/spotify/auth/callback`;
+}
+
+async function getSpotifyDjUserAccessToken(env, { forceRefresh = false } = {}) {
+  if (!hasSpotifyClientCredentials(env)) {
+    return { error: json({ error: 'Spotify credentials are not configured on this Worker.' }, 500), token: '', auth: null };
+  }
+
+  const authState = await getDjPlaybackStateValue(env, SPOTIFY_DJ_AUTH_STATE_KEY);
+  const refreshToken = sanitizeText(authState?.refreshToken || '', 600);
+  const existingAccessToken = sanitizeText(authState?.accessToken || '', 600);
+  const expiresAtMs = parseIsoDateMs(authState?.expiresAt || '');
+  const nowMs = Date.now();
+  if (!refreshToken) {
+    return { error: json({ error: 'Spotify DJ account is not connected.' }, 409), token: '', auth: null };
+  }
+
+  if (!forceRefresh && existingAccessToken && expiresAtMs !== null && (expiresAtMs - nowMs) > 60_000) {
+    return { error: null, token: existingAccessToken, auth: authState };
+  }
+
+  const authHeader = getSpotifyAuthHeader(env);
+  const tokenResponse = await fetch(`${SPOTIFY_ACCOUNTS_BASE_URL}/api/token`, {
+    method: 'POST',
+    headers: {
+      Authorization: authHeader,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken
+    }).toString()
+  });
+
+  const tokenPayload = await parseJsonResponseSafe(tokenResponse);
+  if (!tokenResponse.ok) {
+    const code = sanitizeText(tokenPayload?.error || '', 80).toLowerCase();
+    if (code === 'invalid_grant' || tokenResponse.status === 400 || tokenResponse.status === 401) {
+      await setDjPlaybackStateValue(env, SPOTIFY_DJ_AUTH_STATE_KEY, null);
+      return {
+        error: json({ error: 'Spotify connection expired. Reconnect Spotify to continue playback.' }, 409),
+        token: '',
+        auth: null
+      };
+    }
+    return {
+      error: json({ error: 'Unable to refresh Spotify DJ token.' }, 502),
+      token: '',
+      auth: null
+    };
+  }
+
+  const refreshedAccessToken = sanitizeText(tokenPayload?.access_token || '', 600);
+  if (!refreshedAccessToken) {
+    return {
+      error: json({ error: 'Spotify token response was missing an access token.' }, 502),
+      token: '',
+      auth: null
+    };
+  }
+
+  const refreshed = {
+    refreshToken: sanitizeText(tokenPayload?.refresh_token || refreshToken, 600),
+    accessToken: refreshedAccessToken,
+    tokenType: sanitizeText(tokenPayload?.token_type || authState?.tokenType || 'Bearer', 40),
+    scope: sanitizeText(tokenPayload?.scope || authState?.scope || SPOTIFY_DJ_SCOPE, 500),
+    expiresAt: new Date(Date.now() + (Math.max(1, Number(tokenPayload?.expires_in) || 3600) * 1000)).toISOString(),
+    connectedAt: sanitizeText(authState?.connectedAt || '', 40) || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await setDjPlaybackStateValue(env, SPOTIFY_DJ_AUTH_STATE_KEY, refreshed);
+
+  return { error: null, token: refreshedAccessToken, auth: refreshed };
+}
+
+async function requestSpotifyDjApi(env, path, { method = 'GET', body = null } = {}) {
+  const accessTokenResult = await getSpotifyDjUserAccessToken(env);
+  if (accessTokenResult.error) {
+    return { errorResponse: accessTokenResult.error, response: null, payload: {} };
+  }
+
+  const requestOnce = async (token) => {
+    const headers = { Authorization: `Bearer ${token}` };
+    if (body !== null) headers['Content-Type'] = 'application/json';
+    const response = await fetch(`${SPOTIFY_WEB_API_BASE_URL}${path}`, {
+      method,
+      headers,
+      body: body === null ? undefined : JSON.stringify(body)
+    });
+    const payload = await parseJsonResponseSafe(response);
+    return { response, payload };
+  };
+
+  let current = await requestOnce(accessTokenResult.token);
+  if (current.response.status === 401) {
+    const refreshResult = await getSpotifyDjUserAccessToken(env, { forceRefresh: true });
+    if (refreshResult.error) {
+      return { errorResponse: refreshResult.error, response: null, payload: {} };
+    }
+    current = await requestOnce(refreshResult.token);
+  }
+
+  return { errorResponse: null, response: current.response, payload: current.payload };
+}
+
+function buildSpotifyDjErrorResponse(response, payload) {
+  const message = sanitizeText(payload?.error?.message || payload?.error || '', 220);
+  if (response.status === 403) {
+    return json({ error: message || 'Spotify denied playback control. Check Premium account and scopes.' }, 403);
+  }
+  if (response.status === 404) {
+    return json({ error: message || 'No active Spotify playback target found. Start the browser player and retry.' }, 404);
+  }
+  if (response.status === 401) {
+    return json({ error: message || 'Spotify authorization failed. Reconnect Spotify.' }, 401);
+  }
+  return json({ error: message || `Spotify request failed (${response.status}).` }, response.status || 502);
+}
+
+async function handleSpotifyDjAuthStart(request, env) {
+  if (!hasSpotifyClientCredentials(env)) {
+    return json({ error: 'Spotify credentials are not configured on this Worker.' }, 500);
+  }
+
+  const requestUrl = new URL(request.url);
+  const returnTo = resolveSpotifyDjReturnTo(request, requestUrl.searchParams.get('returnTo') || '');
+  const oauthState = createSpotifyStateToken();
+  const codeVerifier = createPkceCodeVerifier();
+  const codeChallenge = await createPkceCodeChallenge(codeVerifier);
+  const redirectUri = buildSpotifyDjCallbackUrl(request, env);
+
+  await setDjPlaybackStateValue(env, SPOTIFY_DJ_OAUTH_STATE_KEY, {
+    state: oauthState,
+    codeVerifier,
+    returnTo,
+    redirectUri,
+    createdAt: new Date().toISOString()
+  });
+
+  const params = new URLSearchParams({
+    client_id: sanitizeText(env.SPOTIFY_CLIENT_ID || '', 200),
+    response_type: 'code',
+    redirect_uri: redirectUri,
+    scope: SPOTIFY_DJ_SCOPE,
+    state: oauthState,
+    code_challenge_method: 'S256',
+    code_challenge: codeChallenge,
+    show_dialog: 'false'
+  });
+
+  return json({
+    authorizeUrl: `${SPOTIFY_ACCOUNTS_BASE_URL}/authorize?${params.toString()}`,
+    expiresAt: new Date(Date.now() + SPOTIFY_DJ_OAUTH_TTL_MS).toISOString()
+  });
+}
+
+async function handleSpotifyDjAuthCallback(request, env) {
+  const requestUrl = new URL(request.url);
+  const code = sanitizeText(requestUrl.searchParams.get('code') || '', 400);
+  const state = sanitizeText(requestUrl.searchParams.get('state') || '', 120);
+  const spotifyError = sanitizeText(requestUrl.searchParams.get('error') || '', 120);
+
+  const pendingState = await getDjPlaybackStateValue(env, SPOTIFY_DJ_OAUTH_STATE_KEY);
+  const returnTo = sanitizeText(pendingState?.returnTo || '', 1000) || `${requestUrl.origin}/dj/dashboard.html`;
+  const failRedirect = (reason) => Response.redirect(appendQueryParams(returnTo, {
+    spotifyAuth: 'error',
+    reason: sanitizeText(reason || 'auth_failed', 80)
+  }), 302);
+
+  if (spotifyError) {
+    await setDjPlaybackStateValue(env, SPOTIFY_DJ_OAUTH_STATE_KEY, null);
+    return failRedirect(spotifyError);
+  }
+
+  if (!pendingState || !state || !code || sanitizeText(pendingState.state || '', 120) !== state) {
+    await setDjPlaybackStateValue(env, SPOTIFY_DJ_OAUTH_STATE_KEY, null);
+    return failRedirect('invalid_state');
+  }
+
+  const createdAtMs = parseIsoDateMs(pendingState.createdAt || '');
+  if (createdAtMs === null || (Date.now() - createdAtMs) > SPOTIFY_DJ_OAUTH_TTL_MS) {
+    await setDjPlaybackStateValue(env, SPOTIFY_DJ_OAUTH_STATE_KEY, null);
+    return failRedirect('state_expired');
+  }
+
+  const redirectUri = sanitizeText(pendingState.redirectUri || '', 400) || buildSpotifyDjCallbackUrl(request, env);
+  const authHeader = getSpotifyAuthHeader(env);
+  const tokenResponse = await fetch(`${SPOTIFY_ACCOUNTS_BASE_URL}/api/token`, {
+    method: 'POST',
+    headers: {
+      Authorization: authHeader,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirectUri,
+      client_id: sanitizeText(env.SPOTIFY_CLIENT_ID || '', 200),
+      code_verifier: sanitizeText(pendingState.codeVerifier || '', 200)
+    }).toString()
+  });
+
+  const tokenPayload = await parseJsonResponseSafe(tokenResponse);
+  if (!tokenResponse.ok) {
+    await setDjPlaybackStateValue(env, SPOTIFY_DJ_OAUTH_STATE_KEY, null);
+    return failRedirect(sanitizeText(tokenPayload?.error || 'token_exchange_failed', 80));
+  }
+
+  const accessToken = sanitizeText(tokenPayload?.access_token || '', 600);
+  const refreshToken = sanitizeText(tokenPayload?.refresh_token || '', 600);
+  if (!accessToken || !refreshToken) {
+    await setDjPlaybackStateValue(env, SPOTIFY_DJ_OAUTH_STATE_KEY, null);
+    return failRedirect('missing_token_data');
+  }
+
+  await setDjPlaybackStateValue(env, SPOTIFY_DJ_AUTH_STATE_KEY, {
+    refreshToken,
+    accessToken,
+    tokenType: sanitizeText(tokenPayload?.token_type || 'Bearer', 40),
+    scope: sanitizeText(tokenPayload?.scope || SPOTIFY_DJ_SCOPE, 500),
+    expiresAt: new Date(Date.now() + (Math.max(1, Number(tokenPayload?.expires_in) || 3600) * 1000)).toISOString(),
+    connectedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+  await setDjPlaybackStateValue(env, SPOTIFY_DJ_OAUTH_STATE_KEY, null);
+
+  return Response.redirect(appendQueryParams(returnTo, { spotifyAuth: 'connected' }), 302);
+}
+
+async function handleSpotifyDjAuthStatus(env) {
+  const authState = await getDjPlaybackStateValue(env, SPOTIFY_DJ_AUTH_STATE_KEY);
+  const connected = Boolean(sanitizeText(authState?.refreshToken || '', 600));
+  return json({
+    connected,
+    expiresAt: connected ? sanitizeText(authState?.expiresAt || '', 80) : '',
+    scope: connected ? sanitizeText(authState?.scope || '', 500) : '',
+    connectedAt: connected ? sanitizeText(authState?.connectedAt || '', 80) : ''
+  });
+}
+
+async function handleSpotifyDjAuthDisconnect(env) {
+  await setDjPlaybackStateValue(env, SPOTIFY_DJ_AUTH_STATE_KEY, null);
+  await setDjPlaybackStateValue(env, SPOTIFY_DJ_OAUTH_STATE_KEY, null);
+  return json({ ok: true });
+}
+
+async function handleSpotifyDjSdkToken(env) {
+  const tokenResult = await getSpotifyDjUserAccessToken(env);
+  if (tokenResult.error) return tokenResult.error;
+
+  const token = sanitizeText(tokenResult.token || '', 600);
+  if (!token) {
+    return json({ error: 'Spotify token is unavailable.' }, 502);
+  }
+
+  return json({
+    accessToken: token,
+    tokenType: sanitizeText(tokenResult.auth?.tokenType || 'Bearer', 40),
+    expiresAt: sanitizeText(tokenResult.auth?.expiresAt || '', 80),
+    scope: sanitizeText(tokenResult.auth?.scope || '', 500)
+  });
+}
+
+async function handleSpotifyDjTransfer(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON payload' }, 400);
+  }
+
+  const deviceId = normalizeSpotifyDjDeviceId(body?.deviceId || '');
+  if (!deviceId) {
+    return json({ error: 'A valid Spotify device id is required.' }, 400);
+  }
+
+  const shouldPlay = Boolean(body?.play);
+  const spotifyResult = await requestSpotifyDjApi(env, '/me/player', {
+    method: 'PUT',
+    body: {
+      device_ids: [deviceId],
+      play: shouldPlay
+    }
+  });
+  if (spotifyResult.errorResponse) return spotifyResult.errorResponse;
+  if (!spotifyResult.response?.ok) return buildSpotifyDjErrorResponse(spotifyResult.response, spotifyResult.payload);
+
+  return json({ ok: true, deviceId, play: shouldPlay });
+}
+
+async function handleSpotifyDjDevices(env) {
+  const spotifyResult = await requestSpotifyDjApi(env, '/me/player/devices');
+  if (spotifyResult.errorResponse) return spotifyResult.errorResponse;
+  if (!spotifyResult.response?.ok) return buildSpotifyDjErrorResponse(spotifyResult.response, spotifyResult.payload);
+
+  const devices = Array.isArray(spotifyResult.payload?.devices) ? spotifyResult.payload.devices : [];
+  return json({
+    devices: devices.map((device) => ({
+      id: sanitizeText(device?.id || '', 220),
+      name: sanitizeText(device?.name || '', 200),
+      isActive: Boolean(device?.is_active),
+      type: sanitizeText(device?.type || '', 80),
+      volumePercent: Number(device?.volume_percent ?? 0),
+      isRestricted: Boolean(device?.is_restricted)
+    })).filter((device) => device.id)
+  });
+}
+
+async function handleSpotifyDjPlay(request, env) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Invalid JSON payload' }, 400);
+  }
+
+  const trackUri = normalizeSpotifyDjTrackUri(body?.trackUri || body?.trackId || '');
+  if (!trackUri) {
+    return json({ error: 'A valid Spotify track id or uri is required.' }, 400);
+  }
+
+  const deviceId = normalizeSpotifyDjDeviceId(body?.deviceId || '');
+  const path = deviceId
+    ? `/me/player/play?device_id=${encodeURIComponent(deviceId)}`
+    : '/me/player/play';
+
+  const spotifyResult = await requestSpotifyDjApi(env, path, {
+    method: 'PUT',
+    body: { uris: [trackUri] }
+  });
+  if (spotifyResult.errorResponse) return spotifyResult.errorResponse;
+  if (!spotifyResult.response?.ok) return buildSpotifyDjErrorResponse(spotifyResult.response, spotifyResult.payload);
+
+  return json({ ok: true, trackUri, deviceId });
 }
 
 function sanitizePlaybackTrackPayload(payload) {
@@ -2258,462 +2791,6 @@ async function handleMarkDjPlaybackHistory(request, env) {
   return json({ ok: true });
 }
 
-function normalizeSoundCloudMatchText(value) {
-  const lowered = String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ');
-  return sanitizeText(lowered, 280).replace(/\s+/g, ' ').trim();
-}
-
-function tokenizeSoundCloudMatchText(value) {
-  const normalized = normalizeSoundCloudMatchText(value);
-  return normalized ? normalized.split(' ') : [];
-}
-
-function soundCloudContainsWholePhrase(haystack, phrase) {
-  const normalizedHaystack = normalizeSoundCloudMatchText(haystack);
-  const normalizedPhrase = normalizeSoundCloudMatchText(phrase);
-  if (!normalizedHaystack || !normalizedPhrase) return false;
-  return ` ${normalizedHaystack} `.includes(` ${normalizedPhrase} `);
-}
-
-function hasLikelySoundCloudVariantMarkers(title) {
-  const normalized = normalizeSoundCloudMatchText(title);
-  if (!normalized) return false;
-  const markers = [
-    'karaoke',
-    'instrumental',
-    'cover',
-    'tribute',
-    'nightcore',
-    'sped up',
-    'slowed',
-    'reverb',
-    'remix',
-    'edit',
-    'mashup'
-  ];
-  return markers.some((marker) => normalized.includes(marker));
-}
-
-function getMeaningfulSoundCloudTokens(value) {
-  const stop = new Set(['the', 'and', 'feat', 'ft', 'official', 'audio', 'video', 'lyrics', 'music', 'remix', 'edit', 'version']);
-  return tokenizeSoundCloudMatchText(value)
-    .map((token) => sanitizeText(token, 40))
-    .filter((token) => token && token.length >= 3 && !stop.has(token));
-}
-
-function computeSoundCloudTokenCoverage(requiredTokens, candidateTokens) {
-  if (!requiredTokens.length) return 1;
-  if (!candidateTokens.size) return 0;
-  let hits = 0;
-  requiredTokens.forEach((token) => {
-    if (candidateTokens.has(token)) hits += 1;
-  });
-  return hits / requiredTokens.length;
-}
-
-function buildSoundCloudCandidateSignals({ trackName, artists, candidateTitle, candidateArtist }) {
-  const titleNorm = normalizeSoundCloudMatchText(trackName);
-  const candidateTitleNorm = normalizeSoundCloudMatchText(candidateTitle);
-  const primaryArtist = sanitizeText((artists || [])[0] || '', 120);
-  const primaryArtistNorm = normalizeSoundCloudMatchText(primaryArtist);
-  const candidateArtistNorm = normalizeSoundCloudMatchText(candidateArtist);
-
-  const titleTokens = getMeaningfulSoundCloudTokens(trackName);
-  const candidateTitleTokens = new Set(getMeaningfulSoundCloudTokens(candidateTitle));
-  const primaryArtistTokens = getMeaningfulSoundCloudTokens(primaryArtist);
-  const candidateCompositeTokens = new Set(getMeaningfulSoundCloudTokens(`${candidateArtist} ${candidateTitle}`));
-
-  const titleCoverage = computeSoundCloudTokenCoverage(titleTokens, candidateTitleTokens);
-  const artistCoverage = computeSoundCloudTokenCoverage(primaryArtistTokens, candidateCompositeTokens);
-  const exactTitleFamilyMatch = Boolean(titleNorm && candidateTitleNorm && (
-    candidateTitleNorm === titleNorm
-    || candidateTitleNorm.includes(titleNorm)
-    || titleNorm.includes(candidateTitleNorm)
-  ));
-  const titleMatched = exactTitleFamilyMatch || titleCoverage >= 0.72;
-  const artistMatched = !primaryArtistTokens.length || artistCoverage >= 0.7 || (
-    primaryArtistNorm && candidateArtistNorm && (
-      candidateArtistNorm.includes(primaryArtistNorm)
-      || primaryArtistNorm.includes(candidateArtistNorm)
-    )
-  );
-  const artistStrictMatched = !primaryArtist || soundCloudContainsWholePhrase(candidateArtist, primaryArtist);
-
-  return {
-    titleCoverage,
-    artistCoverage,
-    titleMatched,
-    artistMatched,
-    artistStrictMatched,
-    acceptable: titleMatched && artistMatched && artistStrictMatched
-  };
-}
-
-function computeSoundCloudMatchScore({ trackName, artists, candidateTitle, candidateArtist }) {
-  const titleNorm = normalizeSoundCloudMatchText(trackName);
-  const candidateTitleNorm = normalizeSoundCloudMatchText(candidateTitle);
-  const primaryArtistNorm = normalizeSoundCloudMatchText((artists || [])[0] || '');
-  const candidateArtistNorm = normalizeSoundCloudMatchText(candidateArtist);
-
-  const titleTokens = tokenizeSoundCloudMatchText(trackName);
-  const candidateTitleTokens = new Set(tokenizeSoundCloudMatchText(candidateTitle));
-  const artistTokens = tokenizeSoundCloudMatchText((artists || []).join(' '));
-  const candidateArtistTokens = new Set(tokenizeSoundCloudMatchText(candidateArtist));
-
-  let score = 0;
-
-  if (titleNorm && candidateTitleNorm) {
-    if (candidateTitleNorm === titleNorm) score += 100;
-    if (candidateTitleNorm.startsWith(titleNorm)) score += 50;
-    if (candidateTitleNorm.includes(titleNorm)) score += 28;
-    if (titleNorm.includes(candidateTitleNorm)) score += 14;
-  }
-
-  if (primaryArtistNorm && candidateArtistNorm) {
-    if (candidateArtistNorm === primaryArtistNorm) score += 32;
-    else if (candidateArtistNorm.includes(primaryArtistNorm)) score += 20;
-    else if (primaryArtistNorm.includes(candidateArtistNorm)) score += 10;
-  }
-
-  titleTokens.forEach((token) => {
-    if (candidateTitleTokens.has(token)) score += 4;
-  });
-  artistTokens.forEach((token) => {
-    if (candidateArtistTokens.has(token)) score += 3;
-  });
-
-  const signals = buildSoundCloudCandidateSignals({ trackName, artists, candidateTitle, candidateArtist });
-  score += Math.round(signals.titleCoverage * 50);
-  score += Math.round(signals.artistCoverage * 40);
-  if (signals.artistStrictMatched) score += 60;
-  if (signals.acceptable) score += 45;
-  if (hasLikelySoundCloudVariantMarkers(candidateTitle)) score -= 55;
-
-  return score;
-}
-
-function mapSoundCloudTrack(track, { trackName, artists }) {
-  const id = Number(track?.id || 0);
-  const title = sanitizeText(track?.title || '', 220);
-  const uploaderName = sanitizeText(track?.user?.username || '', 120);
-  const publisherArtist = sanitizeText(track?.publisher_metadata?.artist || '', 120);
-  const artist = sanitizeText(publisherArtist || uploaderName, 120);
-  const permalinkUrl = sanitizeText(track?.permalink_url || '', 400);
-  if (!id || !title || !permalinkUrl) return null;
-
-  const durationMs = Math.max(0, Number(track?.duration || track?.full_duration || 0));
-  const artworkUrl = sanitizeText(track?.artwork_url || track?.user?.avatar_url || '', 400);
-  const artistComposite = sanitizeText(`${uploaderName} ${publisherArtist}`.trim(), 240);
-  const signals = buildSoundCloudCandidateSignals({ trackName, artists, candidateTitle: title, candidateArtist: artistComposite || artist });
-  const primaryArtist = sanitizeText((artists || [])[0] || '', 120);
-  const uploaderVerified = Boolean(track?.user?.verified || track?.verified);
-  const publisherStrictArtistMatch = !primaryArtist || soundCloudContainsWholePhrase(publisherArtist, primaryArtist);
-  const officialLikeArtistMatch = !primaryArtist || uploaderVerified || publisherStrictArtistMatch;
-  const variantLikely = hasLikelySoundCloudVariantMarkers(title);
-
-  return {
-    id,
-    title,
-    artist,
-    uploaderName,
-    publisherArtist,
-    uploaderVerified,
-    officialLikeArtistMatch,
-    durationMs,
-    artworkUrl,
-    permalinkUrl,
-    apiTrackUrl: `https://api.soundcloud.com/tracks/${id}`,
-    matchScore: computeSoundCloudMatchScore({
-      trackName,
-      artists,
-      candidateTitle: title,
-      candidateArtist: artistComposite || artist
-    }),
-    titleCoverage: signals.titleCoverage,
-    artistCoverage: signals.artistCoverage,
-    titleMatched: signals.titleMatched,
-    artistMatched: signals.artistMatched,
-    artistStrictMatched: signals.artistStrictMatched,
-    variantLikely,
-    acceptable: signals.acceptable
-  };
-}
-
-function buildSoundCloudWidgetSrc(apiTrackUrl) {
-  const params = new URLSearchParams({
-    url: apiTrackUrl,
-    auto_play: 'true',
-    hide_related: 'true',
-    show_comments: 'false',
-    show_user: 'true',
-    show_reposts: 'false',
-    visual: 'false'
-  });
-  return `https://w.soundcloud.com/player/?${params.toString()}`;
-}
-
-function buildSoundCloudSearchQuery(trackName, artists) {
-  const parts = [sanitizeText(trackName, 220), ...(artists || []).map((artist) => sanitizeText(artist, 120))]
-    .filter(Boolean)
-    .slice(0, 3);
-  return sanitizeText(parts.join(' '), 320);
-}
-
-async function parseJsonSafe(response) {
-  try {
-    return await response.json();
-  } catch {
-    return {};
-  }
-}
-
-function sanitizeSoundCloudErrorDetail(value) {
-  return sanitizeText(String(value || ''), 220);
-}
-
-async function requestSoundCloudClientToken(clientId, clientSecret) {
-  const tokenUrls = [SOUND_CLOUD_OAUTH_TOKEN_URL, SOUND_CLOUD_OAUTH_TOKEN_FALLBACK_URL];
-  let lastStatus = 500;
-  let lastDetail = '';
-
-  for (const tokenUrl of tokenUrls) {
-    try {
-      const response = await fetch(tokenUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json'
-        },
-        body: 'grant_type=client_credentials'
-      });
-
-      if (response.ok) {
-        const tokenPayload = await parseJsonSafe(response);
-        const accessToken = sanitizeText(tokenPayload?.access_token || '', 500);
-        if (accessToken) return { token: accessToken, status: 200, detail: '' };
-      }
-
-      lastStatus = Number(response.status) || 500;
-      const body = await parseJsonSafe(response);
-      lastDetail = sanitizeSoundCloudErrorDetail(body?.error_description || body?.error || body?.message || '');
-    } catch (error) {
-      lastStatus = 502;
-      const diagnostic = sanitizeSoundCloudErrorDetail(error?.message || error?.cause?.message || String(error || ''));
-      lastDetail = diagnostic || 'token_request_failed';
-    }
-  }
-
-  return {
-    token: '',
-    status: lastStatus,
-    detail: lastDetail || 'unable_to_retrieve_access_token'
-  };
-}
-
-async function fetchSoundCloudTracks({ query, clientId, accessToken }) {
-  const tracksUrl = new URL(SOUND_CLOUD_TRACKS_BASE_URL);
-  tracksUrl.searchParams.set('q', query);
-  tracksUrl.searchParams.set('limit', '30');
-  tracksUrl.searchParams.set('linked_partitioning', '1');
-  if (clientId) tracksUrl.searchParams.set('client_id', clientId);
-
-  const searchV2Url = new URL(SOUND_CLOUD_SEARCH_V2_URL);
-  searchV2Url.searchParams.set('q', query);
-  searchV2Url.searchParams.set('limit', '30');
-  searchV2Url.searchParams.set('offset', '0');
-  searchV2Url.searchParams.set('linked_partitioning', '1');
-  if (clientId) searchV2Url.searchParams.set('client_id', clientId);
-
-  const requestAttempts = [];
-  if (accessToken) {
-    requestAttempts.push({ label: 'tracks_bearer', url: tracksUrl.toString(), authHeader: `Bearer ${accessToken}` });
-    requestAttempts.push({ label: 'tracks_oauth', url: tracksUrl.toString(), authHeader: `OAuth ${accessToken}` });
-    requestAttempts.push({ label: 'search_v2_bearer', url: searchV2Url.toString(), authHeader: `Bearer ${accessToken}` });
-    requestAttempts.push({ label: 'search_v2_oauth', url: searchV2Url.toString(), authHeader: `OAuth ${accessToken}` });
-  }
-  if (clientId) {
-    requestAttempts.push({ label: 'tracks_client_id', url: tracksUrl.toString(), authHeader: '' });
-    requestAttempts.push({ label: 'search_v2_client_id', url: searchV2Url.toString(), authHeader: '' });
-  }
-
-  if (!requestAttempts.length) {
-    return { ok: false, status: 500, detail: 'no_auth_credentials', collection: [] };
-  }
-
-  let lastStatus = 500;
-  let lastDetail = '';
-  let lastEndpoint = '';
-
-  for (const attempt of requestAttempts) {
-    const requestUrl = attempt.url;
-    const headers = { Accept: 'application/json' };
-    if (attempt.authHeader) headers.Authorization = attempt.authHeader;
-
-    try {
-      const response = await fetch(requestUrl, { headers });
-      if (response.ok) {
-        const body = await parseJsonSafe(response);
-        const collection = Array.isArray(body) ? body : (Array.isArray(body?.collection) ? body.collection : []);
-        return { ok: true, status: response.status, detail: '', collection };
-      }
-
-      lastEndpoint = attempt.label || 'unknown';
-      lastStatus = Number(response.status) || 500;
-      const body = await parseJsonSafe(response);
-      lastDetail = sanitizeSoundCloudErrorDetail(body?.error_description || body?.error || body?.message || '');
-    } catch (error) {
-      lastEndpoint = attempt.label || 'unknown';
-      lastStatus = 502;
-      const diagnostic = sanitizeSoundCloudErrorDetail(error?.message || error?.cause?.message || String(error || ''));
-      lastDetail = diagnostic || 'search_request_failed';
-    }
-  }
-
-  return {
-    ok: false,
-    status: lastStatus,
-    detail: sanitizeSoundCloudErrorDetail(`${lastDetail || 'search_request_failed'}${lastEndpoint ? ` @ ${lastEndpoint}` : ''}`),
-    collection: []
-  };
-}
-
-async function fetchSoundCloudPublicClientId(query) {
-  const searchUrl = new URL(SOUND_CLOUD_PUBLIC_SEARCH_PAGE_URL);
-  searchUrl.searchParams.set('q', query);
-
-  try {
-    const response = await fetch(searchUrl.toString(), { headers: { Accept: 'text/html' } });
-    if (!response.ok) return '';
-
-    const html = await response.text();
-    const match = html.match(/\"hydratable\":\"apiClient\",\"data\":\{\"id\":\"([A-Za-z0-9]+)\"/);
-    return sanitizeText(match?.[1] || '', 120);
-  } catch {
-    return '';
-  }
-}
-
-async function handleAdminSoundCloudResolve(request, env) {
-  const clientId = sanitizeText(env.SOUNDCLOUD_CLIENT_ID || '', 180);
-  const clientSecret = sanitizeText(env.SOUNDCLOUD_CLIENT_SECRET || '', 220);
-  if (!clientId) {
-    return json({ error: 'SoundCloud client id is not configured.', code: 'soundcloud_not_configured', status: 500, detail: 'missing_client_id', candidates: [] }, 500);
-  }
-
-  const url = new URL(request.url);
-  const trackName = sanitizeText(url.searchParams.get('trackName') || '', 220);
-  const artists = url.searchParams.getAll('artist').map((artist) => sanitizeText(artist, 120)).filter(Boolean).slice(0, 6);
-  const query = buildSoundCloudSearchQuery(trackName, artists);
-  if (!query) return json({ error: 'Track name is required.', code: 'invalid_query', candidates: [] }, 400);
-
-  let accessToken = '';
-  if (clientSecret) {
-    const tokenResult = await requestSoundCloudClientToken(clientId, clientSecret);
-    if (!tokenResult.token) {
-      return json({
-        error: 'Unable to get SoundCloud OAuth access token.',
-        code: 'soundcloud_token_failed',
-        status: tokenResult.status || 500,
-        detail: tokenResult.detail || 'token_failed',
-        query,
-        candidates: []
-      }, tokenResult.status || 500);
-    }
-    accessToken = tokenResult.token;
-  }
-
-  const searchResult = await fetchSoundCloudTracks({ query, clientId, accessToken });
-  let effectiveSearchResult = searchResult;
-  if (!effectiveSearchResult.ok && (effectiveSearchResult.status === 401 || effectiveSearchResult.status === 403)) {
-    const publicClientId = await fetchSoundCloudPublicClientId(query);
-    if (publicClientId && publicClientId !== clientId) {
-      effectiveSearchResult = await fetchSoundCloudTracks({ query, clientId: publicClientId, accessToken: '' });
-    }
-  }
-
-  if (!effectiveSearchResult.ok) {
-    return json({
-      error: 'SoundCloud search request failed.',
-      code: 'soundcloud_search_failed',
-      status: effectiveSearchResult.status || 500,
-      detail: effectiveSearchResult.detail || 'search_failed',
-      query,
-      candidates: []
-    }, effectiveSearchResult.status || 500);
-  }
-
-  const collection = effectiveSearchResult.collection;
-  const candidates = collection
-    .map((track) => mapSoundCloudTrack(track, { trackName, artists }))
-    .filter(Boolean)
-    .sort((left, right) => {
-      if (right.matchScore !== left.matchScore) return right.matchScore - left.matchScore;
-      return right.durationMs - left.durationMs;
-    })
-    .slice(0, 5);
-
-  if (!candidates.length) {
-    return json({ error: 'No SoundCloud match found for this queue track.', code: 'soundcloud_not_found', status: 404, detail: '', query, candidates: [] }, 404);
-  }
-
-  const verifiedCandidates = candidates.filter((candidate) =>
-    candidate.acceptable
-    && candidate.artistStrictMatched
-    && candidate.officialLikeArtistMatch
-    && !candidate.variantLikely
-    && candidate.matchScore >= 120
-  );
-  if (!verifiedCandidates.length) {
-    return json({
-      error: 'No artist-verified SoundCloud match found for this song.',
-      code: 'soundcloud_not_found',
-      status: 404,
-      detail: 'no_artist_verified_match',
-      query,
-      candidates: candidates.map((entry) => ({
-        id: entry.id,
-        title: entry.title,
-        artist: entry.artist,
-        matchScore: entry.matchScore,
-        titleMatched: entry.titleMatched,
-        artistMatched: entry.artistMatched,
-        artistStrictMatched: entry.artistStrictMatched,
-        officialLikeArtistMatch: entry.officialLikeArtistMatch
-      }))
-    }, 404);
-  }
-
-  const match = verifiedCandidates[0];
-  return json({
-    query,
-    match: {
-      id: match.id,
-      title: match.title,
-      artist: match.artist,
-      durationMs: match.durationMs,
-      artworkUrl: match.artworkUrl,
-      permalinkUrl: match.permalinkUrl,
-      apiTrackUrl: match.apiTrackUrl
-    },
-    widgetSrc: buildSoundCloudWidgetSrc(match.apiTrackUrl || match.permalinkUrl),
-    candidates: candidates.map((entry) => ({
-      id: entry.id,
-      title: entry.title,
-      artist: entry.artist,
-      matchScore: entry.matchScore,
-      titleMatched: entry.titleMatched,
-      artistMatched: entry.artistMatched,
-      artistStrictMatched: entry.artistStrictMatched,
-      officialLikeArtistMatch: entry.officialLikeArtistMatch,
-      durationMs: entry.durationMs,
-      artworkUrl: entry.artworkUrl,
-      permalinkUrl: entry.permalinkUrl,
-      apiTrackUrl: entry.apiTrackUrl
-    }))
-  });
-}
-
 async function getSpotifyAccessToken(env) {
   if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) {
     return { error: json({ error: 'Spotify credentials are not configured' }, 500), token: '' };
@@ -3106,6 +3183,10 @@ export default {
         ? `/api/admin/${url.pathname.slice('/api/dj/'.length)}`
         : url.pathname;
 
+      if (request.method === 'GET' && url.pathname === '/api/spotify/auth/callback') {
+        return withCors(await handleSpotifyDjAuthCallback(request, env), corsHeaders);
+      }
+
       if (request.method === 'POST' && routePath === '/api/admin/login') {
         return withCors(await handleAdminLogin(request, env), corsHeaders);
       }
@@ -3176,19 +3257,46 @@ export default {
         return withCors(await handleMarkDjPlaybackHistory(request, env), corsHeaders);
       }
 
-      if (request.method === 'GET' && routePath === '/api/admin/soundcloud/resolve') {
+      if (request.method === 'GET' && routePath === '/api/admin/spotify/auth/start') {
         const unauthorized = requireAdmin(request, env);
         if (unauthorized) return withCors(unauthorized, corsHeaders);
-        return withCors(
-          json(
-            {
-              error: 'SoundCloud playback is disabled. Use Spotify playback only.',
-              code: 'soundcloud_disabled'
-            },
-            410
-          ),
-          corsHeaders
-        );
+        return withCors(await handleSpotifyDjAuthStart(request, env), corsHeaders);
+      }
+
+      if (request.method === 'GET' && routePath === '/api/admin/spotify/auth/status') {
+        const unauthorized = requireAdmin(request, env);
+        if (unauthorized) return withCors(unauthorized, corsHeaders);
+        return withCors(await handleSpotifyDjAuthStatus(env), corsHeaders);
+      }
+
+      if (request.method === 'POST' && routePath === '/api/admin/spotify/auth/disconnect') {
+        const unauthorized = requireAdmin(request, env);
+        if (unauthorized) return withCors(unauthorized, corsHeaders);
+        return withCors(await handleSpotifyDjAuthDisconnect(env), corsHeaders);
+      }
+
+      if (request.method === 'GET' && routePath === '/api/admin/spotify/sdk-token') {
+        const unauthorized = requireAdmin(request, env);
+        if (unauthorized) return withCors(unauthorized, corsHeaders);
+        return withCors(await handleSpotifyDjSdkToken(env), corsHeaders);
+      }
+
+      if (request.method === 'POST' && routePath === '/api/admin/spotify/transfer') {
+        const unauthorized = requireAdmin(request, env);
+        if (unauthorized) return withCors(unauthorized, corsHeaders);
+        return withCors(await handleSpotifyDjTransfer(request, env), corsHeaders);
+      }
+
+      if (request.method === 'GET' && routePath === '/api/admin/spotify/devices') {
+        const unauthorized = requireAdmin(request, env);
+        if (unauthorized) return withCors(unauthorized, corsHeaders);
+        return withCors(await handleSpotifyDjDevices(env), corsHeaders);
+      }
+
+      if (request.method === 'POST' && routePath === '/api/admin/spotify/play') {
+        const unauthorized = requireAdmin(request, env);
+        if (unauthorized) return withCors(unauthorized, corsHeaders);
+        return withCors(await handleSpotifyDjPlay(request, env), corsHeaders);
       }
 
       if (request.method === 'GET' && url.pathname === '/api/public/queue') {

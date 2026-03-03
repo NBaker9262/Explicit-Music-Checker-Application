@@ -42,7 +42,13 @@ Send `Authorization: Basic <base64(username:password)>`
 - `POST /api/admin/reorder`
 - `POST /api/admin/control`
 - `GET /api/admin/analytics`
-- `GET /api/admin/soundcloud/resolve?trackName=...&artist=...`
+- `GET /api/admin/spotify/auth/start`
+- `GET /api/admin/spotify/auth/status`
+- `POST /api/admin/spotify/auth/disconnect`
+- `GET /api/admin/spotify/sdk-token`
+- `POST /api/admin/spotify/transfer`
+- `GET /api/admin/spotify/devices`
+- `POST /api/admin/spotify/play`
 
 ## Current queue model
 
@@ -89,17 +95,15 @@ Notes:
 2. Set Spotify credentials:
    - `SPOTIFY_CLIENT_ID`
    - `SPOTIFY_CLIENT_SECRET`
+   - optional override: `SPOTIFY_REDIRECT_URI` (defaults to `http://localhost:3000/api/spotify/auth/callback`)
 3. (Optional) set OpenAI moderation key:
    - `OPENAI_API_KEY`
-4. (Optional) set SoundCloud credentials for admin playback:
-   - `SOUNDCLOUD_CLIENT_ID`
-   - `SOUNDCLOUD_CLIENT_SECRET`
-5. Set admin credentials:
+4. Set admin credentials:
    - `ADMIN_USERNAME`
    - `ADMIN_PASSWORD`
-6. Start server:
+5. Start server:
    - `npm start`
-7. Open:
+6. Open:
    - `http://localhost:3000`
 
 ## Cloudflare Worker + D1
@@ -115,24 +119,23 @@ Notes:
    - Remote: `npm run cf:migrate:remote`
 4. Set allowed frontend origins:
    - set `ALLOWED_ORIGIN` to a comma-separated list of trusted frontend domains
+   - set `SPOTIFY_REDIRECT_URI` to the exact callback registered in Spotify (for this repo:
+   - `https://music-queue-api.noahmathmaster.workers.dev/api/spotify/auth/callback`)
 5. Set Spotify secrets:
    - `npm run cf:secret:put -- SPOTIFY_CLIENT_ID`
    - `npm run cf:secret:put -- SPOTIFY_CLIENT_SECRET`
 6. Set OpenAI moderation key:
    - `npm run cf:secret:put -- OPENAI_API_KEY`
-7. (Optional) set SoundCloud credentials for admin playback:
-   - `npm run cf:secret:put -- SOUNDCLOUD_CLIENT_ID`
-   - `npm run cf:secret:put -- SOUNDCLOUD_CLIENT_SECRET`
-8. Set admin credentials:
+7. Set admin credentials:
    - `npm run cf:secret:put -- ADMIN_USERNAME`
    - `npm run cf:secret:put -- ADMIN_PASSWORD`
-9. (Optional) disable lyrics moderation:
+8. (Optional) disable lyrics moderation:
    - `npm run cf:secret:put -- DISABLE_LYRICS_MODERATION`
    - enter `1` when prompted
-10. (Optional) manage secrets in bulk:
+9. (Optional) manage secrets in bulk:
    - copy `cloudflare/secrets.example.json` to a local untracked file (for example `cloudflare/secrets.json`)
    - run: `npm run cf:secret:bulk -- cloudflare/secrets.json`
-11. Deploy API:
+10. Deploy API:
    - `npm run cf:deploy`
 
 ## Wrangler command quick reference
@@ -160,19 +163,29 @@ Notes:
 
 To force a custom API host, set `window.APP_CONFIG.apiBaseUrl` before loading `/js/config.js`.
 
-## SoundCloud admin playback setup
+## Spotify DJ playback setup
 
-1. Add SoundCloud credentials:
-   - local: set `SOUNDCLOUD_CLIENT_ID` and `SOUNDCLOUD_CLIENT_SECRET` in your shell
-   - Cloudflare:
-     - `npm run cf:secret:put -- SOUNDCLOUD_CLIENT_ID`
-     - `npm run cf:secret:put -- SOUNDCLOUD_CLIENT_SECRET`
-2. Open `/admin/dashboard.html` and use the **SoundCloud Playback** panel:
-   - `Start Queue Playback` loads queue head in SoundCloud player
-   - `Play/Pause`, `Restart`, and seek/volume controls behave like a normal player
-   - `Next In Queue` removes current queue head (`play_next_approved`) and loads the next approved track
-   - `Auto-advance` does the same automatically when a track finishes
-3. If SoundCloud cannot find a match, playback status shows the resolver error and queue moderation controls remain usable.
+1. Open `/dj/dashboard.html`.
+2. Click **Connect Spotify** and finish OAuth.
+   - OAuth prompts are reduced (`show_dialog=false`); you should not need to re-login every time.
+   - If you connected before the latest scope update, reconnect once to refresh permissions.
+3. Click **Start Queue Playback** to load the first approved queue song in the browser player (Web Playback SDK + Playback API).
+4. Use player transport controls:
+   - play/pause
+   - restart current track
+   - seek bar
+   - next queue song
+5. Use queue controls to manage/deletes lanes quickly:
+   - Clear Queue
+   - Clear Review
+   - Clear Blocked
+   - Fix Order
+   - Clear All
+6. Use **Open In Spotify** if you want to jump out to the Spotify app/site.
+
+Note: Spotify Web Playback SDK requires a Premium Spotify account for full playback.
+
+Moderation note: the default safe-song exceptions include `Titanium` and `Shut Up and Dance`, and suggestive-but-clean dance tracks are scored more leniently than explicit content.
 
 ## Production notes
 
