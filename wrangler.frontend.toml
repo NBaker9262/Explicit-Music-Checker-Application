@@ -1,5 +1,0 @@
-name = "explicit-music-checker-application"
-compatibility_date = "2026-02-27"
-
-[assets]
-directory = "./public"

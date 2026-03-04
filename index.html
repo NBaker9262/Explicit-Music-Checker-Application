@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Campus Song Requests</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="wrap">
+    <h1>🎵 Campus Song Requests</h1>
+    <p class="muted">
+      Guests submit requests using the form. DJ approves in the Sheet. This page shows the live approved queue.
+    </p>
+
+    <div class="row">
+      <a id="requestLink" class="btn" target="_blank" rel="noopener">Submit a Song Request</a>
+      <button id="refreshBtn" class="btn secondary">Refresh Now</button>
+    </div>
+
+    <div class="status" id="statusMsg">Waiting…</div>
+  </header>
+
+  <main class="wrap grid">
+    <section class="card">
+      <h2>✅ Approved Queue</h2>
+      <ol id="approvedList" class="list"></ol>
+    </section>
+
+    <section class="card">
+      <h2>📺 OBS Overlay Preview (optional)</h2>
+      <p class="muted">If you use OBS, open <code>overlay.html</code> as a Browser Source.</p>
+      <a class="btn secondary" href="overlay.html" target="_blank" rel="noopener">Open Overlay</a>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
